@@ -97,7 +97,7 @@ func (m *Version) GetV0_0_1() string {
 	return ""
 }
 
-//*
+// *
 // @dev SetRequest
 // @param {old_root} - merkle-tree root
 // @param {key} - key to set
@@ -184,7 +184,7 @@ func (m *SetRequest) GetGetDbReadLog() bool {
 	return false
 }
 
-//*
+// *
 // @dev GetRequest
 // @param {root} - merkle-tree root
 // @param {key} - key to look for
@@ -253,7 +253,7 @@ func (m *GetRequest) GetGetDbReadLog() bool {
 	return false
 }
 
-//*
+// *
 // @dev SetProgramRequest
 // @param {key} - key to set
 // @param {data} - Program data to store
@@ -313,7 +313,7 @@ func (m *SetProgramRequest) GetPersistent() bool {
 	return false
 }
 
-//*
+// *
 // @dev GetProgramRequest
 // @param {key} - key to get program data
 type GetProgramRequest struct {
@@ -355,7 +355,7 @@ func (m *GetProgramRequest) GetKey() *Fea {
 	return nil
 }
 
-//*
+// *
 // @dev LoadDBRequest
 // @param {input_db} - list of db records (MT) to load in the database
 // @param {persistent} - indicates if it should be stored in the SQL database (true) or only in the memory cache (false)
@@ -406,7 +406,7 @@ func (m *LoadDBRequest) GetPersistent() bool {
 	return false
 }
 
-//*
+// *
 // @dev LoadProgramDBRequest
 // @param {input_program_db} - list of db records (program) to load in the database
 // @param {persistent} - indicates if it should be stored in the SQL database (true) or only in the memory cache (false)
@@ -457,7 +457,7 @@ func (m *LoadProgramDBRequest) GetPersistent() bool {
 	return false
 }
 
-//*
+// *
 // @dev SetResponse
 // @param {old_root} - merkle-tree root
 // @param {new_root} - merkle-tree new root
@@ -607,7 +607,7 @@ func (m *SetResponse) GetResult() *ResultCode {
 	return nil
 }
 
-//*
+// *
 // @dev GetResponse
 // @param {root} - merkle-tree root
 // @param {key} - key to look for
@@ -730,7 +730,7 @@ func (m *GetResponse) GetResult() *ResultCode {
 	return nil
 }
 
-//*
+// *
 // @dev SetProgramResponse
 // @param {result} - result code
 type SetProgramResponse struct {
@@ -772,7 +772,7 @@ func (m *SetProgramResponse) GetResult() *ResultCode {
 	return nil
 }
 
-//*
+// *
 // @dev GetProgramResponse
 // @param {data} - program data retrieved
 // @param {result} - result code
@@ -823,7 +823,7 @@ func (m *GetProgramResponse) GetResult() *ResultCode {
 	return nil
 }
 
-//*
+// *
 // @dev FlushResponse
 // @param {result} - result code
 type FlushResponse struct {
@@ -865,7 +865,7 @@ func (m *FlushResponse) GetResult() *ResultCode {
 	return nil
 }
 
-//*
+// *
 // @dev Array of 4 FE
 // @param {fe0} - Field Element value for pos 0
 // @param {fe1} - Field Element value for pos 1
@@ -934,7 +934,7 @@ func (m *Fea) GetFe3() uint64 {
 	return 0
 }
 
-//*
+// *
 // @dev FE (Field Element) List
 // @param {fe} - list of Fe
 type FeList struct {
@@ -976,7 +976,7 @@ func (m *FeList) GetFe() []uint64 {
 	return nil
 }
 
-//*
+// *
 // @dev Siblings List
 // @param {sibling} - list of siblings
 type SiblingList struct {
@@ -1018,7 +1018,7 @@ func (m *SiblingList) GetSibling() []uint64 {
 	return nil
 }
 
-//*
+// *
 // @dev Result code
 // @param {code} - result code
 type ResultCode struct {

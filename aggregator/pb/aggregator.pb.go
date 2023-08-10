@@ -20,11 +20,11 @@ var _ = math.Inf
 // proto package needs to be updated.
 const _ = proto.ProtoPackageIsVersion3 // please upgrade the proto package
 
-//*
+// *
 // @dev Result
-//  - OK: succesfully completed
-//  - ERROR: request is not correct, i.e. input data is wrong
-//  - INTERNAL_ERROR: internal server error when delivering the response
+//   - OK: succesfully completed
+//   - ERROR: request is not correct, i.e. input data is wrong
+//   - INTERNAL_ERROR: internal server error when delivering the response
 type Result int32
 
 const (
@@ -465,7 +465,7 @@ func (*ProverMessage) XXX_OneofWrappers() []interface{} {
 	}
 }
 
-//*
+// *
 // @dev GetStatusRequest
 type GetStatusRequest struct {
 	XXX_NoUnkeyedLiteral struct{} `json:"-"`
@@ -498,7 +498,7 @@ func (m *GetStatusRequest) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_GetStatusRequest proto.InternalMessageInfo
 
-//*
+// *
 // @dev GenBatchProofRequest
 // @param {input} - input prover
 type GenBatchProofRequest struct {
@@ -540,7 +540,7 @@ func (m *GenBatchProofRequest) GetInput() *InputProver {
 	return nil
 }
 
-//*
+// *
 // @dev GenAggregatedProofRequest
 // @param {recursive_proof_1} - proof json of the first batch to aggregate
 // @param {recursive_proof_2} - proof json of the second batch to aggregate
@@ -591,7 +591,7 @@ func (m *GenAggregatedProofRequest) GetRecursiveProof_2() string {
 	return ""
 }
 
-//*
+// *
 // @dev GenFinalProofRequest
 // @param {recursive_proof} - proof json of the batch or aggregated proof to finalise
 // @param {aggregator_addr} - address of the aggregator
@@ -642,7 +642,7 @@ func (m *GenFinalProofRequest) GetAggregatorAddr() string {
 	return ""
 }
 
-//*
+// *
 // @dev CancelRequest
 // @param {id} - identifier of the proof request to cancel
 type CancelRequest struct {
@@ -684,7 +684,7 @@ func (m *CancelRequest) GetId() string {
 	return ""
 }
 
-//*
+// *
 // @dev Request GetProof
 // @param {id} - proof identifier of the proof request
 // @param {timeout} - time to wait until the service responds
@@ -735,7 +735,7 @@ func (m *GetProofRequest) GetTimeout() uint64 {
 	return 0
 }
 
-//*
+// *
 // @dev Response GetStatus
 // @param {status} - server status
 // - BOOTING: being ready to compute proofs
@@ -897,7 +897,7 @@ func (m *GetStatusResponse) GetForkId() uint64 {
 	return 0
 }
 
-//*
+// *
 // @dev GenBatchProofResponse
 // @param {id} - proof identifier, to be used in GetProofRequest()
 // @param {result} - request result
@@ -948,7 +948,7 @@ func (m *GenBatchProofResponse) GetResult() Result {
 	return Result_RESULT_UNSPECIFIED
 }
 
-//*
+// *
 // @dev GenAggregatedProofResponse
 // @param {id} - proof identifier, to be used in GetProofRequest()
 // @param {result} - request result
@@ -999,7 +999,7 @@ func (m *GenAggregatedProofResponse) GetResult() Result {
 	return Result_RESULT_UNSPECIFIED
 }
 
-//*
+// *
 // @dev Response GenFinalProof
 // @param {id} - proof identifier, to be used in GetProofRequest()
 // @param {result} - request result
@@ -1050,7 +1050,7 @@ func (m *GenFinalProofResponse) GetResult() Result {
 	return Result_RESULT_UNSPECIFIED
 }
 
-//*
+// *
 // @dev CancelResponse
 // @param {result} - request result
 type CancelResponse struct {
@@ -1092,18 +1092,19 @@ func (m *CancelResponse) GetResult() Result {
 	return Result_RESULT_UNSPECIFIED
 }
 
-//*
+// *
 // @dev GetProofResponse
 // @param {id} - proof identifier
 // @param {final_proof} - groth16 proof + public circuit inputs
 // @param {recursive_proof} - recursive proof json
 // @param {result} - proof result
-//  - COMPLETED_OK: proof has been computed successfully and it is valid
-//  - ERROR: request error
-//  - COMPLETED_ERROR: proof has been computed successfully and it is not valid
-//  - PENDING: proof is being computed
-//  - INTERNAL_ERROR: server error during proof computation
-//  - CANCEL: proof has been cancelled
+//   - COMPLETED_OK: proof has been computed successfully and it is valid
+//   - ERROR: request error
+//   - COMPLETED_ERROR: proof has been computed successfully and it is not valid
+//   - PENDING: proof is being computed
+//   - INTERNAL_ERROR: server error during proof computation
+//   - CANCEL: proof has been cancelled
+//
 // @param {result_string} - extends result information
 type GetProofResponse struct {
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1209,7 +1210,6 @@ func (*GetProofResponse) XXX_OneofWrappers() []interface{} {
 	}
 }
 
-//
 // @dev FinalProof
 // @param {proof} - groth16 proof
 // @param {public} - public circuit inputs
@@ -1260,7 +1260,6 @@ func (m *FinalProof) GetPublic() *PublicInputsExtended {
 	return nil
 }
 
-//
 // @dev PublicInputs
 // @param {old_state_root}
 // @param {old_acc_input_hash}
@@ -1381,7 +1380,7 @@ func (m *PublicInputs) GetAggregatorAddr() string {
 	return ""
 }
 
-//*
+// *
 // @dev InputProver
 // @param {public_inputs} - public inputs
 // @param {db} - database containing all key-values in smt matching the old state root
@@ -1441,7 +1440,7 @@ func (m *InputProver) GetContractsBytecode() map[string]string {
 	return nil
 }
 
-//*
+// *
 // @dev PublicInputsExtended
 // @param {public_inputs} - public inputs
 // @param {new_state_root} - final state root. Used as a sanity check.

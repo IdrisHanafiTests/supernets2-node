@@ -391,6 +391,7 @@ func (s *ClientSynchronizer) syncTrustedState(latestSyncedBatch uint64) error {
 
 func (s *ClientSynchronizer) processBlockRange(blocks []etherman.Block, order map[common.Hash][]etherman.Order) error {
 	// New info has to be included into the db using the state
+	log.Infof("processing block range %+v, %+v", blocks, order)
 	for i := range blocks {
 		// Begin db transaction
 		dbTx, err := s.state.BeginStateTransaction(s.ctx)
@@ -416,6 +417,7 @@ func (s *ClientSynchronizer) processBlockRange(blocks []etherman.Block, order ma
 			return err
 		}
 		for _, element := range order[blocks[i].BlockHash] {
+			log.Infof("found element %+v", element)
 			switch element.Name {
 			case etherman.SequenceBatchesOrder:
 				err = s.processSequenceBatches(blocks[i].SequencedBatches[element.Pos], blocks[i].BlockNumber, dbTx)

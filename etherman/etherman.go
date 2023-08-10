@@ -273,10 +273,12 @@ func (etherMan *Client) GetForks(ctx context.Context, genBlockNumber uint64) ([]
 // from block x to block y.
 func (etherMan *Client) GetRollupInfoByBlockRange(ctx context.Context, fromBlock uint64, toBlock *uint64) ([]Block, map[common.Hash][]Order, error) {
 	// Filter query
+	log.Infof("Get rollup info by block range: %d - %d", fromBlock, *toBlock)
 	query := ethereum.FilterQuery{
 		FromBlock: new(big.Int).SetUint64(fromBlock),
 		Addresses: etherMan.SCAddresses,
 	}
+	log.Infof("Current Filter Query: %+v", query)
 	if toBlock != nil {
 		query.ToBlock = new(big.Int).SetUint64(*toBlock)
 	}
@@ -295,6 +297,8 @@ type Order struct {
 
 func (etherMan *Client) readEvents(ctx context.Context, query ethereum.FilterQuery) ([]Block, map[common.Hash][]Order, error) {
 	logs, err := etherMan.EthClient.FilterLogs(ctx, query)
+
+	log.Infof("Got logs: %+v with filter %+v", logs, query)
 	if err != nil {
 		return nil, nil, err
 	}
