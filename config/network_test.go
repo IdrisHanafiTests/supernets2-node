@@ -163,6 +163,13 @@ func TestLoadCustomNetworkConfig(t *testing.T) {
       "balance": "3000000000000000000000"
     }
   ],
+  "l1Config" : {
+    "chainId": 420,
+    "supernets2Address": "0xc949254d682d8c9ad5682521675b8f43b102aec4",
+    "maticTokenAddress": "0xc949254d682d8c9ad5682521675b8f43b102aec4",
+    "polygonZkEVMGlobalExitRootAddress": "0xc949254d682d8c9ad5682521675b8f43b102aec4",
+    "supernets2DataCommitteeContract": "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6"
+  },
   "maxCumulativeGasUsed": 123456
 }`,
 			expectedConfig: NetworkConfig{
