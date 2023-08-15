@@ -119,7 +119,6 @@ func loadGenesisFromJSONString(jsonStr string) (NetworkConfig, error) {
 
 	err := validate.Struct(cfgJSON.L1Config)
 	if err != nil {
-		log.Errorf("Missing L1Config value from JSON: %+v", cfgJSON.L1Config)
 		return cfg, err
 	}
 
