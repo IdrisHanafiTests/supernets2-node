@@ -4,15 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
-	"github.com/0xPolygonHermez/zkevm-node/event"
-	"github.com/0xPolygonHermez/zkevm-node/log"
-	"github.com/0xPolygonHermez/zkevm-node/pool"
-	"github.com/0xPolygonHermez/zkevm-node/sequencer/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/state"
-	stateMetrics "github.com/0xPolygonHermez/zkevm-node/state/metrics"
+	"github.com/0xPolygon/cdk-validium-node/event"
+	"github.com/0xPolygon/cdk-validium-node/log"
+	"github.com/0xPolygon/cdk-validium-node/pool"
+	"github.com/0xPolygon/cdk-validium-node/sequencer/metrics"
+	"github.com/0xPolygon/cdk-validium-node/state"
+	stateMetrics "github.com/0xPolygon/cdk-validium-node/state/metrics"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -43,19 +42,6 @@ type batchConstraints struct {
 	MaxSteps             uint32
 }
 
-// TODO: Add tests to config_test.go
-type batchResourceWeights struct {
-	WeightBatchBytesSize    int
-	WeightCumulativeGasUsed int
-	WeightKeccakHashes      int
-	WeightPoseidonHashes    int
-	WeightPoseidonPaddings  int
-	WeightMemAligns         int
-	WeightArithmetics       int
-	WeightBinaries          int
-	WeightSteps             int
-}
-
 // L2ReorgEvent is the event that is triggered when a reorg happens in the L2
 type L2ReorgEvent struct {
 	TxHashes []common.Hash
@@ -66,12 +52,6 @@ type ClosingSignalCh struct {
 	ForcedBatchCh chan state.ForcedBatch
 	GERCh         chan common.Hash
 	L2ReorgCh     chan L2ReorgEvent
-}
-
-// pendingTxPerAddressTracker is a struct that tracks the number of pending transactions per address
-type pendingTxPerAddressTracker struct {
-	wg    *sync.WaitGroup
-	count uint
 }
 
 // New init sequencer
@@ -118,37 +98,24 @@ func (s *Sequencer) Start(ctx context.Context) {
 		MaxBinaries:          s.cfg.MaxBinaries,
 		MaxSteps:             s.cfg.MaxSteps,
 	}
-	batchResourceWeights := batchResourceWeights{
-		WeightBatchBytesSize:    s.cfg.WeightBatchBytesSize,
-		WeightCumulativeGasUsed: s.cfg.WeightCumulativeGasUsed,
-		WeightKeccakHashes:      s.cfg.WeightKeccakHashes,
-		WeightPoseidonHashes:    s.cfg.WeightPoseidonHashes,
-		WeightPoseidonPaddings:  s.cfg.WeightPoseidonPaddings,
-		WeightMemAligns:         s.cfg.WeightMemAligns,
-		WeightArithmetics:       s.cfg.WeightArithmetics,
-		WeightBinaries:          s.cfg.WeightBinaries,
-		WeightSteps:             s.cfg.WeightSteps,
-	}
 
 	err := s.pool.MarkWIPTxsAsPending(ctx)
 	if err != nil {
 		log.Fatalf("failed to mark WIP txs as pending, err: %v", err)
 	}
-	pendingTxsToStoreMux := new(sync.RWMutex)
-	pendingTxTrackerPerAddress := make(map[common.Address]*pendingTxPerAddressTracker)
 
-	worker := NewWorker(s.cfg.Worker, s.state, batchConstraints, batchResourceWeights, pendingTxsToStoreMux, pendingTxTrackerPerAddress)
+	worker := NewWorker(s.state)
 	dbManager := newDBManager(ctx, s.cfg.DBManager, s.pool, s.state, worker, closingSignalCh, batchConstraints)
 	go dbManager.Start()
 
-	finalizer := newFinalizer(s.cfg.Finalizer, s.cfg.EffectiveGasPrice, worker, dbManager, s.state, s.address, s.isSynced, closingSignalCh, batchConstraints, s.eventLog, pendingTxsToStoreMux, pendingTxTrackerPerAddress)
+	finalizer := newFinalizer(s.cfg.Finalizer, s.cfg.EffectiveGasPrice, worker, dbManager, s.state, s.address, s.isSynced, closingSignalCh, batchConstraints, s.eventLog)
 	currBatch, processingReq := s.bootstrap(ctx, dbManager, finalizer)
 	go finalizer.Start(ctx, currBatch, processingReq)
 
 	closingSignalsManager := newClosingSignalsManager(ctx, finalizer.dbManager, closingSignalCh, finalizer.cfg, s.etherman)
 	go closingSignalsManager.Start()
 
-	go s.trackOldTxs(ctx)
+	go s.purgeOldPoolTxs(ctx)
 	tickerProcessTxs := time.NewTicker(s.cfg.WaitPeriodPoolIsEmpty.Duration)
 	defer tickerProcessTxs.Stop()
 
@@ -227,7 +194,7 @@ func (s *Sequencer) bootstrap(ctx context.Context, dbManager *dbManager, finaliz
 	return currBatch, processRequest
 }
 
-func (s *Sequencer) trackOldTxs(ctx context.Context) {
+func (s *Sequencer) purgeOldPoolTxs(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.FrequencyToCheckTxsForDelete.Duration)
 	for {
 		waitTick(ctx, ticker)

@@ -12,13 +12,13 @@ endif
 GOBASE := $(shell pwd)
 GOBIN := $(GOBASE)/dist
 GOENVVARS := GOBIN=$(GOBIN) CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH)
-GOBINARY := supernets2-node
+GOBINARY := cdk-validium-node
 GOCMD := $(GOBASE)/cmd
 
-LDFLAGS += -X 'github.com/0xPolygonHermez/zkevm-node.Version=$(VERSION)'
-LDFLAGS += -X 'github.com/0xPolygonHermez/zkevm-node.GitRev=$(GITREV)'
-LDFLAGS += -X 'github.com/0xPolygonHermez/zkevm-node.GitBranch=$(GITBRANCH)'
-LDFLAGS += -X 'github.com/0xPolygonHermez/zkevm-node.BuildDate=$(DATE)'
+LDFLAGS += -X 'github.com/0xPolygon/cdk-validium-node.Version=$(VERSION)'
+LDFLAGS += -X 'github.com/0xPolygon/cdk-validium-node.GitRev=$(GITREV)'
+LDFLAGS += -X 'github.com/0xPolygon/cdk-validium-node.GitBranch=$(GITBRANCH)'
+LDFLAGS += -X 'github.com/0xPolygon/cdk-validium-node.BuildDate=$(DATE)'
 
 # Variables
 VENV           = .venv
@@ -35,11 +35,11 @@ build: ## Builds the binary locally into ./dist
 
 .PHONY: build-docker
 build-docker: ## Builds a docker image with the node binary
-	docker build -t supernets2-node -f ./Dockerfile .
+	docker build -t cdk-validium-node -f ./Dockerfile .
 
 .PHONY: build-docker-nc
 build-docker-nc: ## Builds a docker image with the node binary - but without build cache
-	docker build --no-cache=true -t supernets2-node -f ./Dockerfile .
+	docker build --no-cache=true -t cdk-validium-node -f ./Dockerfile .
 
 .PHONY: install-linter
 install-linter: ## Installs the linter
@@ -108,9 +108,9 @@ install-git-hooks: ## Moves hook files to the .git/hooks directory
 
 .PHONY: generate-code-from-proto
 generate-code-from-proto: ## Generates code from proto files
-	cd proto/src/proto/hashdb/v1 && protoc --proto_path=. --proto_path=../../../../include --go_out=../../../../../merkletree/pb --go-grpc_out=../../../../../merkletree/pb --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative hashdb.proto
+	cd proto/src/proto/hashdb/v1 && protoc --proto_path=. --proto_path=../../../../include --go_out=../../../../../merkletree/hashdb --go-grpc_out=../../../../../merkletree/hashdb --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative hashdb.proto
 	cd proto/src/proto/executor/v1 && protoc --proto_path=. --go_out=../../../../../state/runtime/executor --go-grpc_out=../../../../../state/runtime/executor --go-grpc_opt=paths=source_relative --go_opt=paths=source_relative executor.proto
-	cd proto/src/proto/aggregator/v1 && protoc --proto_path=. --proto_path=../../../../include --go_out=../../../../../aggregator/pb --go-grpc_out=../../../../../aggregator/pb --go-grpc_opt=paths=source_relative --go_opt=paths=source_relative aggregator.proto
+	cd proto/src/proto/aggregator/v1 && protoc --proto_path=. --proto_path=../../../../include --go_out=../../../../../aggregator/prover --go-grpc_out=../../../../../aggregator/prover --go-grpc_opt=paths=source_relative --go_opt=paths=source_relative aggregator.proto
 
 ## Help display.
 ## Pulls comments from beside commands and prints a nicely formatted

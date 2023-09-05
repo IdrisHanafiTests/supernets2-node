@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	cfgTypes "github.com/0xPolygonHermez/zkevm-node/config/types"
-	"github.com/0xPolygonHermez/zkevm-node/etherman"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/supernets2"
-	"github.com/0xPolygonHermez/zkevm-node/jsonrpc/types"
-	"github.com/0xPolygonHermez/zkevm-node/state"
-	"github.com/0xPolygonHermez/zkevm-node/state/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
+	cfgTypes "github.com/0xPolygon/cdk-validium-node/config/types"
+	"github.com/0xPolygon/cdk-validium-node/etherman"
+	"github.com/0xPolygon/cdk-validium-node/etherman/smartcontracts/cdkvalidium"
+	"github.com/0xPolygon/cdk-validium-node/jsonrpc/types"
+	"github.com/0xPolygon/cdk-validium-node/state"
+	"github.com/0xPolygon/cdk-validium-node/state/metrics"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/executor"
 	"github.com/ethereum/go-ethereum/common"
 	ethTypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -183,7 +183,7 @@ func TestForcedBatch(t *testing.T) {
 				Coinbase:      common.HexToAddress("0x222"),
 				SequencerAddr: common.HexToAddress("0x00"),
 				TxHash:        common.HexToHash("0x333"),
-				Supernets2BatchData: supernets2.Supernets2BatchData{
+				CDKValidiumBatchData: cdkvalidium.CDKValidiumBatchData{
 					TransactionsHash:   crypto.Keccak256Hash(txs),
 					GlobalExitRoot:     [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
 					Timestamp:          uint64(t.Unix()),
@@ -433,7 +433,7 @@ func TestSequenceForcedBatch(t *testing.T) {
 				BatchNumber: uint64(2),
 				Coinbase:    common.HexToAddress("0x222"),
 				TxHash:      common.HexToHash("0x333"),
-				Supernets2ForcedBatchData: supernets2.Supernets2ForcedBatchData{
+				CDKValidiumForcedBatchData: cdkvalidium.CDKValidiumForcedBatchData{
 					Transactions:       []byte{},
 					GlobalExitRoot:     [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
 					MinForcedTimestamp: 1000, //ForcedBatch
@@ -707,21 +707,22 @@ func expectedCallsForsyncTrustedState(t *testing.T, m *mocks, sync *ClientSynchr
 			Once()
 	}
 
-	// m.State.
-	// 	On("ResetTrustedState", sync.ctx, batchNumber-1, m.DbTx).
-	// 	Return(nil).
-	// 	Once()
+	m.State.
+		On("ResetTrustedState", sync.ctx, batchNumber-1, m.DbTx).
+		Return(nil).
+		Once()
 
-	// processCtx := state.ProcessingContext{
-	// 	BatchNumber:    uint64(batchInTrustedNode.Number),
-	// 	Coinbase:       common.HexToAddress(batchInTrustedNode.Coinbase.String()),
-	// 	Timestamp:      time.Unix(int64(batchInTrustedNode.Timestamp), 0),
-	// 	GlobalExitRoot: batchInTrustedNode.GlobalExitRoot,
-	// }
-	// m.State.
-	// 	On("OpenBatch", sync.ctx, processCtx, m.DbTx).
-	// 	Return(nil).
-	// 	Once()
+	processCtx := state.ProcessingContext{
+		BatchNumber:    uint64(batchInTrustedNode.Number),
+		Coinbase:       common.HexToAddress(batchInTrustedNode.Coinbase.String()),
+		Timestamp:      time.Unix(int64(batchInTrustedNode.Timestamp), 0),
+		GlobalExitRoot: batchInTrustedNode.GlobalExitRoot,
+		BatchL2Data:    (*[]byte)(&batchInTrustedNode.BatchL2Data),
+	}
+	m.State.
+		On("OpenBatch", sync.ctx, processCtx, m.DbTx).
+		Return(nil).
+		Once()
 
 	m.State.
 		On("UpdateBatchL2Data", sync.ctx, batchNumber, stateBatchInTrustedNode.BatchL2Data, mock.Anything).

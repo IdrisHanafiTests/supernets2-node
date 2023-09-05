@@ -5,11 +5,11 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/0xPolygonHermez/zkevm-node/ethtxmanager"
-	"github.com/0xPolygonHermez/zkevm-node/pool"
-	"github.com/0xPolygonHermez/zkevm-node/state"
-	"github.com/0xPolygonHermez/zkevm-node/state/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
+	"github.com/0xPolygon/cdk-validium-node/ethtxmanager"
+	"github.com/0xPolygon/cdk-validium-node/pool"
+	"github.com/0xPolygon/cdk-validium-node/state"
+	"github.com/0xPolygon/cdk-validium-node/state/metrics"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/executor"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/jackc/pgx/v4"
@@ -83,12 +83,16 @@ type stateInterface interface {
 type workerInterface interface {
 	GetBestFittingTx(resources state.BatchResources) *TxTracker
 	UpdateAfterSingleSuccessfulTxExecution(from common.Address, touchedAddresses map[common.Address]*state.InfoReadWrite) []*TxTracker
-	UpdateTx(txHash common.Hash, from common.Address, ZKCounters state.ZKCounters)
+	UpdateTxZKCounters(txHash common.Hash, from common.Address, ZKCounters state.ZKCounters)
 	AddTxTracker(ctx context.Context, txTracker *TxTracker) (replacedTx *TxTracker, dropReason error)
 	MoveTxToNotReady(txHash common.Hash, from common.Address, actualNonce *uint64, actualBalance *big.Int) []*TxTracker
 	DeleteTx(txHash common.Hash, from common.Address)
+	AddPendingTxToStore(txHash common.Hash, addr common.Address)
+	DeletePendingTxToStore(txHash common.Hash, addr common.Address)
 	HandleL2Reorg(txHashes []common.Hash)
 	NewTxTracker(tx types.Transaction, counters state.ZKCounters, ip string) (*TxTracker, error)
+	AddForcedTx(txHash common.Hash, addr common.Address)
+	DeleteForcedTx(txHash common.Hash, addr common.Address)
 }
 
 // The dbManager will need to handle the errors inside the functions which don't return error as they will be used async in the other abstractions.

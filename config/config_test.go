@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0xPolygonHermez/zkevm-node/aggregator"
-	"github.com/0xPolygonHermez/zkevm-node/config"
-	"github.com/0xPolygonHermez/zkevm-node/config/types"
-	"github.com/0xPolygonHermez/zkevm-node/log"
+	"github.com/0xPolygon/cdk-validium-node/aggregator"
+	"github.com/0xPolygon/cdk-validium-node/config"
+	"github.com/0xPolygon/cdk-validium-node/config/types"
+	"github.com/0xPolygon/cdk-validium-node/log"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,42 +101,6 @@ func Test_Defaults(t *testing.T) {
 			expectedValue: types.NewDuration(3 * time.Hour),
 		},
 		{
-			path:          "Sequencer.WeightBatchBytesSize",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightCumulativeGasUsed",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightKeccakHashes",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightPoseidonHashes",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightPoseidonPaddings",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightMemAligns",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightArithmetics",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightBinaries",
-			expectedValue: 1,
-		},
-		{
-			path:          "Sequencer.WeightSteps",
-			expectedValue: 1,
-		},
-		{
 			path:          "Sequencer.Finalizer.GERDeadlineTimeout",
 			expectedValue: types.NewDuration(5 * time.Second),
 		},
@@ -209,10 +173,6 @@ func Test_Defaults(t *testing.T) {
 			expectedValue: types.NewDuration(5 * time.Second),
 		},
 		{
-			path:          "Sequencer.Worker.ResourceCostMultiplier",
-			expectedValue: float64(1000),
-		},
-		{
 			path:          "SequenceSender.WaitPeriodSendSequence",
 			expectedValue: types.NewDuration(5 * time.Second),
 		},
@@ -233,7 +193,7 @@ func Test_Defaults(t *testing.T) {
 			expectedValue: uint64(1337),
 		},
 		{
-			path:          "NetworkConfig.L1Config.Supernets2Addr",
+			path:          "NetworkConfig.L1Config.CDKValidiumAddr",
 			expectedValue: common.HexToAddress("0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82"),
 		},
 		{
@@ -269,6 +229,14 @@ func Test_Defaults(t *testing.T) {
 			expectedValue: uint64(0),
 		},
 		{
+			path:          "EthTxManager.GasPriceMarginFactor",
+			expectedValue: float64(1),
+		},
+		{
+			path:          "EthTxManager.MaxGasPriceLimit",
+			expectedValue: uint64(0),
+		},
+		{
 			path:          "L2GasPriceSuggester.DefaultGasPriceWei",
 			expectedValue: uint64(2000000000),
 		},
@@ -278,7 +246,7 @@ func Test_Defaults(t *testing.T) {
 		},
 		{
 			path:          "MTClient.URI",
-			expectedValue: "supernets2-prover:50061",
+			expectedValue: "cdk-validium-prover:50061",
 		},
 		{
 			path:          "StateDB.User",
@@ -294,7 +262,7 @@ func Test_Defaults(t *testing.T) {
 		},
 		{
 			path:          "StateDB.Host",
-			expectedValue: "supernets2-state-db",
+			expectedValue: "cdk-validium-state-db",
 		},
 		{
 			path:          "StateDB.Port",
@@ -355,7 +323,7 @@ func Test_Defaults(t *testing.T) {
 		},
 		{
 			path:          "Pool.DB.Host",
-			expectedValue: "supernets2-pool-db",
+			expectedValue: "cdk-validium-pool-db",
 		},
 		{
 			path:          "Pool.DB.Port",
@@ -411,7 +379,7 @@ func Test_Defaults(t *testing.T) {
 		},
 		{
 			path:          "Executor.URI",
-			expectedValue: "supernets2-prover:50071",
+			expectedValue: "cdk-validium-prover:50071",
 		},
 		{
 			path:          "Executor.MaxResourceExhaustedAttempts",
@@ -519,9 +487,9 @@ func TestEnvVarArrayDecoding(t *testing.T) {
 	flagSet.String(config.FlagCustomNetwork, "../test/config/test.genesis.config.json", "")
 	ctx := cli.NewContext(cli.NewApp(), flagSet, nil)
 
-	os.Setenv("SUPERNETS2_NODE_LOG_OUTPUTS", "a,b,c")
+	os.Setenv("CDK_VALIDIUM_NODE_LOG_OUTPUTS", "a,b,c")
 	defer func() {
-		os.Unsetenv("SUPERNETS2_NODE_LOG_OUTPUTS")
+		os.Unsetenv("CDK_VALIDIUM_NODE_LOG_OUTPUTS")
 	}()
 
 	cfg, err := config.Load(ctx, true)

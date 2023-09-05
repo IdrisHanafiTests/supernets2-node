@@ -4,19 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"time"
 
-	"github.com/0xPolygon/supernets2-data-availability/client"
-	"github.com/0xPolygonHermez/zkevm-node/etherman"
-	"github.com/0xPolygonHermez/zkevm-node/event"
-	"github.com/0xPolygonHermez/zkevm-node/hex"
-	"github.com/0xPolygonHermez/zkevm-node/jsonrpc/types"
-	"github.com/0xPolygonHermez/zkevm-node/log"
-	"github.com/0xPolygonHermez/zkevm-node/state"
-	stateMetrics "github.com/0xPolygonHermez/zkevm-node/state/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/synchronizer/metrics"
+	"github.com/0xPolygon/cdk-data-availability/client"
+	"github.com/0xPolygon/cdk-validium-node/etherman"
+	"github.com/0xPolygon/cdk-validium-node/event"
+	"github.com/0xPolygon/cdk-validium-node/hex"
+	"github.com/0xPolygon/cdk-validium-node/jsonrpc/types"
+	"github.com/0xPolygon/cdk-validium-node/log"
+	"github.com/0xPolygon/cdk-validium-node/state"
+	stateMetrics "github.com/0xPolygon/cdk-validium-node/state/metrics"
+	"github.com/0xPolygon/cdk-validium-node/synchronizer/metrics"
 	"github.com/ethereum/go-ethereum/common"
 	ethTypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/jackc/pgx/v4"
@@ -161,6 +162,15 @@ func (s *ClientSynchronizer) Sync() error {
 					log.Errorf("error rolling back state. RollbackErr: %v, err: %s", rollbackErr, err.Error())
 					return rollbackErr
 				}
+				return err
+			}
+			blocks, _, err := s.etherMan.GetRollupInfoByBlockRange(s.ctx, lastEthBlockSynced.BlockNumber, &lastEthBlockSynced.BlockNumber)
+			if err != nil {
+				log.Fatal(err)
+			}
+			err = s.processForkID(blocks[0].ForkIDs[0], blocks[0].BlockNumber, dbTx)
+			if err != nil {
+				log.Error("error storing genesis forkID: ", err)
 				return err
 			}
 			var root common.Hash
@@ -679,12 +689,9 @@ func (s *ClientSynchronizer) checkTrustedState(batch state.Batch, tBatch *state.
 
 	if reorgReasons.Len() > 0 {
 		reason := reorgReasons.String()
-		log.Warnf("Trusted Reorg detected for Batch Number: %d. Reasons: %s", tBatch.BatchNumber, reason)
+		log.Warnf("Missmatch in trusted state detected for Batch Number: %d. Reasons: %s", tBatch.BatchNumber, reason)
 		if s.isTrustedSequencer {
-			for {
-				log.Error("TRUSTED REORG DETECTED! Batch: ", batch.BatchNumber)
-				time.Sleep(5 * time.Second) //nolint:gomnd
-			}
+			s.halt(s.ctx, fmt.Errorf("TRUSTED REORG DETECTED! Batch: %d", batch.BatchNumber))
 		}
 		// Store trusted reorg register
 		tr := state.TrustedReorg{
@@ -701,9 +708,17 @@ func (s *ClientSynchronizer) checkTrustedState(batch state.Batch, tBatch *state.
 }
 
 func (s *ClientSynchronizer) processForkID(forkID etherman.ForkID, blockNumber uint64, dbTx pgx.Tx) error {
+	fID := state.ForkIDInterval{
+		FromBatchNumber: forkID.BatchNumber + 1,
+		ToBatchNumber:   math.MaxUint64,
+		ForkId:          forkID.ForkID,
+		Version:         forkID.Version,
+		BlockNumber:     blockNumber,
+	}
+
 	//If the forkID.batchnumber is a future batch
 	latestBatchNumber, err := s.state.GetLastBatchNumber(s.ctx, dbTx)
-	if err != nil {
+	if err != nil && !errors.Is(err, state.ErrStateNotSynchronized) {
 		log.Error("error getting last batch number. Error: ", err)
 		rollbackErr := dbTx.Rollback(s.ctx)
 		if rollbackErr != nil {
@@ -712,20 +727,19 @@ func (s *ClientSynchronizer) processForkID(forkID etherman.ForkID, blockNumber u
 		}
 		return err
 	}
-	if latestBatchNumber < forkID.BatchNumber { //If the forkID will start in a future batch
-		// Read Fork ID FROM POE SC
-		forkIDIntervals, err := s.etherMan.GetForks(s.ctx, s.genesis.GenesisBlockNum)
-		if err != nil || len(forkIDIntervals) == 0 {
-			log.Error("error getting all forkIDs: ", err)
+	if latestBatchNumber <= forkID.BatchNumber || s.isTrustedSequencer { //If the forkID will start in a future batch or isTrustedSequencer
+		log.Infof("Just adding forkID. Skipping reset forkID. ForkID: %+v.", fID)
+		// Add new forkID to the state
+		err := s.state.AddForkIDInterval(s.ctx, fID, dbTx)
+		if err != nil {
+			log.Error("error adding new forkID interval to the state. Error: ", err)
 			rollbackErr := dbTx.Rollback(s.ctx)
 			if rollbackErr != nil {
-				log.Errorf("error rolling back state. BlockNumber: %d, rollbackErr: %s, error : %v", blockNumber, rollbackErr.Error(), err)
+				log.Errorf("error rolling back state to store block. BlockNumber: %d, rollbackErr: %s, error : %v", blockNumber, rollbackErr.Error(), err)
 				return rollbackErr
 			}
 			return err
 		}
-		// Update forkID intervals in the state
-		s.state.UpdateForkIDIntervals(forkIDIntervals)
 		return nil
 	}
 
@@ -745,19 +759,8 @@ func (s *ClientSynchronizer) processForkID(forkID etherman.ForkID, blockNumber u
 		return nil
 	}
 
-	// Read Fork ID FROM POE SC
-	forkIDIntervals, err := s.etherMan.GetForks(s.ctx, s.genesis.GenesisBlockNum)
-	if err != nil || len(forkIDIntervals) == 0 {
-		log.Error("error getting all forkIDs: ", err)
-		rollbackErr := dbTx.Rollback(s.ctx)
-		if rollbackErr != nil {
-			log.Errorf("error rolling back state. BlockNumber: %d, rollbackErr: %s, error : %v", blockNumber, rollbackErr.Error(), err)
-			return rollbackErr
-		}
-		return err
-	}
-
-	//Reset DB
+	log.Info("ForkID received in the permissionless node that affects to a batch from the past")
+	//Reset DB only if permissionless node
 	err = s.state.ResetForkID(s.ctx, forkID.BatchNumber+1, forkID.ForkID, forkID.Version, dbTx)
 	if err != nil {
 		log.Error("error resetting the state. Error: ", err)
@@ -768,6 +771,20 @@ func (s *ClientSynchronizer) processForkID(forkID etherman.ForkID, blockNumber u
 		}
 		return err
 	}
+
+	// Add new forkID to the state
+	err = s.state.AddForkIDInterval(s.ctx, fID, dbTx)
+	if err != nil {
+		log.Error("error adding new forkID interval to the state. Error: ", err)
+		rollbackErr := dbTx.Rollback(s.ctx)
+		if rollbackErr != nil {
+			log.Errorf("error rolling back state to store block. BlockNumber: %d, rollbackErr: %s, error : %v", blockNumber, rollbackErr.Error(), err)
+			return rollbackErr
+		}
+		return err
+	}
+
+	// Commit because it returns an error to force the resync
 	err = dbTx.Commit(s.ctx)
 	if err != nil {
 		log.Error("error committing the resetted state. Error: ", err)
@@ -778,9 +795,6 @@ func (s *ClientSynchronizer) processForkID(forkID etherman.ForkID, blockNumber u
 		}
 		return err
 	}
-
-	// Update forkID intervals in the state
-	s.state.UpdateForkIDIntervals(forkIDIntervals)
 
 	return fmt.Errorf("new ForkID detected, reseting synchronizarion")
 }
@@ -936,7 +950,7 @@ func (s *ClientSynchronizer) processSequenceBatches(sequencedBatches []etherman.
 
 			// Reset trusted state
 			previousBatchNumber := batch.BatchNumber - 1
-			log.Warnf("Trusted reorg detected, discarding batches until batchNum %d", previousBatchNumber)
+			log.Warnf("Missmatch in trusted state detected, discarding batches until batchNum %d", previousBatchNumber)
 			err = s.state.ResetTrustedState(s.ctx, previousBatchNumber, dbTx) // This method has to reset the forced batches deleting the batchNumber for higher batchNumbers
 			if err != nil {
 				log.Errorf("error resetting trusted state. BatchNumber: %d, BlockNumber: %d, error: %v", batch.BatchNumber, blockNumber, err)
@@ -1238,6 +1252,20 @@ func (s *ClientSynchronizer) processTrustedBatch(trustedBatch *types.Batch, dbTx
 		log.Error("error getting currentBatches. Error: ", err)
 		return nil, nil, err
 	}
+
+	if batches[0] != nil && (((trustedBatch.StateRoot == common.Hash{}) && (batches[0].StateRoot != common.Hash{})) ||
+		len(batches[0].BatchL2Data) > len(trustedBatchL2Data)) {
+		log.Error("error: inconsistency in data received from trustedNode")
+		log.Infof("BatchNumber. stored: %d. synced: %d", batches[0].BatchNumber, uint64(trustedBatch.Number))
+		log.Infof("GlobalExitRoot. stored:  %s. synced: %s", batches[0].GlobalExitRoot.String(), trustedBatch.GlobalExitRoot.String())
+		log.Infof("LocalExitRoot. stored:  %s. synced: %s", batches[0].LocalExitRoot.String(), trustedBatch.LocalExitRoot.String())
+		log.Infof("StateRoot. stored:  %s. synced: %s", batches[0].StateRoot.String(), trustedBatch.StateRoot.String())
+		log.Infof("Coinbase. stored:  %s. synced: %s", batches[0].Coinbase.String(), trustedBatch.Coinbase.String())
+		log.Infof("Timestamp. stored:  %d. synced: %d", uint64(batches[0].Timestamp.Unix()), uint64(trustedBatch.Timestamp))
+		log.Infof("BatchL2Data. stored: %s. synced: %s", common.Bytes2Hex(batches[0].BatchL2Data), common.Bytes2Hex(trustedBatchL2Data))
+		return nil, nil, fmt.Errorf("error: inconsistency in data received from trustedNode")
+	}
+
 	if s.trustedState.lastStateRoot == nil && (batches[0] == nil || (batches[0].StateRoot == common.Hash{})) {
 		log.Debug("Setting stateRoot of previous batch. StateRoot: ", batches[1].StateRoot)
 		// Previous synchronization incomplete. Needs to reprocess all txs again
@@ -1264,7 +1292,21 @@ func (s *ClientSynchronizer) processTrustedBatch(trustedBatch *types.Batch, dbTx
 
 		// Find txs to be processed and included in the trusted state
 		if *s.trustedState.lastStateRoot == batches[1].StateRoot {
+			// Delete txs that were stored before restart. We need to reprocess all txs because the intermediary stateRoot is only stored in memory
+			err := s.state.ResetTrustedState(s.ctx, uint64(trustedBatch.Number)-1, dbTx)
+			if err != nil {
+				log.Error("error resetting trusted state. Error: ", err)
+				return nil, nil, err
+			}
 			// All txs need to be processed
+			request.Transactions = trustedBatchL2Data
+			// Reopen batch
+			err = s.openBatch(trustedBatch, dbTx)
+			if err != nil {
+				log.Error("error openning batch. Error: ", err)
+				return nil, nil, err
+			}
+			request.GlobalExitRoot = trustedBatch.GlobalExitRoot
 			request.Transactions = trustedBatchL2Data
 		} else {
 			// Only new txs need to be processed
@@ -1289,6 +1331,10 @@ func (s *ClientSynchronizer) processTrustedBatch(trustedBatch *types.Batch, dbTx
 				log.Info("Nothing to sync. Node updated. Checking if it is closed")
 				isBatchClosed := trustedBatch.StateRoot.String() != state.ZeroHash.String()
 				if isBatchClosed {
+					//Sanity check
+					if s.trustedState.lastStateRoot != nil && trustedBatch.StateRoot != *s.trustedState.lastStateRoot {
+						s.halt(s.ctx, fmt.Errorf("stateRoot calculated (%s) is different from the stateRoot (%s) received during the trustedState synchronization", *s.trustedState.lastStateRoot, trustedBatch.StateRoot))
+					}
 					receipt := state.ProcessingReceipt{
 						BatchNumber:   uint64(trustedBatch.Number),
 						StateRoot:     trustedBatch.StateRoot,
@@ -1303,7 +1349,30 @@ func (s *ClientSynchronizer) processTrustedBatch(trustedBatch *types.Batch, dbTx
 							log.Errorf("error closing batch %d", trustedBatch.Number)
 							return nil, nil, err
 						} else {
-							log.Warnf("CASE 02: the batch [%d] looks like were not close but in STATE was closed", trustedBatch.Number)
+							log.Warnf("CASE 02: the batch [%d] was already closed", trustedBatch.Number)
+							log.Info("batches[0].BatchNumber: ", batches[0].BatchNumber)
+							log.Info("batches[0].AccInputHash: ", batches[0].AccInputHash)
+							log.Info("batches[0].StateRoot: ", batches[0].StateRoot)
+							log.Info("batches[0].LocalExitRoot: ", batches[0].LocalExitRoot)
+							log.Info("batches[0].GlobalExitRoot: ", batches[0].GlobalExitRoot)
+							log.Info("batches[0].Coinbase: ", batches[0].Coinbase)
+							log.Info("batches[0].ForcedBatchNum: ", batches[0].ForcedBatchNum)
+							log.Info("####################################")
+							log.Info("batches[1].BatchNumber: ", batches[1].BatchNumber)
+							log.Info("batches[1].AccInputHash: ", batches[1].AccInputHash)
+							log.Info("batches[1].StateRoot: ", batches[1].StateRoot)
+							log.Info("batches[1].LocalExitRoot: ", batches[1].LocalExitRoot)
+							log.Info("batches[1].GlobalExitRoot: ", batches[1].GlobalExitRoot)
+							log.Info("batches[1].Coinbase: ", batches[1].Coinbase)
+							log.Info("batches[1].ForcedBatchNum: ", batches[1].ForcedBatchNum)
+							log.Info("###############################")
+							log.Info("trustedBatch.BatchNumber: ", trustedBatch.Number)
+							log.Info("trustedBatch.AccInputHash: ", trustedBatch.AccInputHash)
+							log.Info("trustedBatch.StateRoot: ", trustedBatch.StateRoot)
+							log.Info("trustedBatch.LocalExitRoot: ", trustedBatch.LocalExitRoot)
+							log.Info("trustedBatch.GlobalExitRoot: ", trustedBatch.GlobalExitRoot)
+							log.Info("trustedBatch.Coinbase: ", trustedBatch.Coinbase)
+							log.Info("trustedBatch.ForcedBatchNum: ", trustedBatch.ForcedBatchNumber)
 						}
 					}
 					batches[0].AccInputHash = trustedBatch.AccInputHash
@@ -1343,6 +1412,10 @@ func (s *ClientSynchronizer) processTrustedBatch(trustedBatch *types.Batch, dbTx
 	log.Debug("TrustedBatch.StateRoot ", trustedBatch.StateRoot)
 	isBatchClosed := trustedBatch.StateRoot.String() != state.ZeroHash.String()
 	if isBatchClosed {
+		//Sanity check
+		if trustedBatch.StateRoot != processBatchResp.NewStateRoot {
+			s.halt(s.ctx, fmt.Errorf("stateRoot calculated (%s) is different from the stateRoot (%s) received during the trustedState synchronization", processBatchResp.NewStateRoot, trustedBatch.StateRoot))
+		}
 		receipt := state.ProcessingReceipt{
 			BatchNumber:   uint64(trustedBatch.Number),
 			StateRoot:     processBatchResp.NewStateRoot,
@@ -1358,8 +1431,15 @@ func (s *ClientSynchronizer) processTrustedBatch(trustedBatch *types.Batch, dbTx
 				log.Errorf("error closing batch %d", trustedBatch.Number)
 				return nil, nil, err
 			} else {
-				log.Warnf("CASE 01: the batch [%d] looks like were not close but in STATE was closed", trustedBatch.Number)
+				log.Warnf("CASE 01: batch [%d] was already closed", trustedBatch.Number)
 			}
+		}
+		log.Info("Batch closed right after processing some tx")
+		if batches[0] != nil {
+			log.Debug("Updating batches[0] values...")
+			batches[0].AccInputHash = trustedBatch.AccInputHash
+			batches[0].StateRoot = trustedBatch.StateRoot
+			batches[0].LocalExitRoot = trustedBatch.LocalExitRoot
 		}
 	}
 
@@ -1424,11 +1504,13 @@ func (s *ClientSynchronizer) processAndStoreTxs(trustedBatch *types.Batch, reque
 
 func (s *ClientSynchronizer) openBatch(trustedBatch *types.Batch, dbTx pgx.Tx) error {
 	log.Debugf("Opening batch %d", trustedBatch.Number)
+	var batchL2Data []byte = trustedBatch.BatchL2Data
 	processCtx := state.ProcessingContext{
 		BatchNumber:    uint64(trustedBatch.Number),
 		Coinbase:       common.HexToAddress(trustedBatch.Coinbase.String()),
 		Timestamp:      time.Unix(int64(trustedBatch.Timestamp), 0),
 		GlobalExitRoot: trustedBatch.GlobalExitRoot,
+		BatchL2Data:    &batchL2Data,
 	}
 	if trustedBatch.ForcedBatchNumber != nil {
 		fb := uint64(*trustedBatch.ForcedBatchNumber)
@@ -1472,13 +1554,13 @@ func checkIfSynced(batches []*state.Batch, trustedBatch *types.Batch) bool {
 		matchCoinbase && matchTimestamp && matchL2Data {
 		return true
 	}
-	log.Info("matchNumber", matchNumber)
-	log.Info("matchGER", matchGER)
-	log.Info("matchLER", matchLER)
-	log.Info("matchSR", matchSR)
-	log.Info("matchCoinbase", matchCoinbase)
-	log.Info("matchTimestamp", matchTimestamp)
-	log.Info("matchL2Data", matchL2Data)
+	log.Infof("matchNumber %v %d %d", matchNumber, batches[0].BatchNumber, uint64(trustedBatch.Number))
+	log.Infof("matchGER %v %s %s", matchGER, batches[0].GlobalExitRoot.String(), trustedBatch.GlobalExitRoot.String())
+	log.Infof("matchLER %v %s %s", matchLER, batches[0].LocalExitRoot.String(), trustedBatch.LocalExitRoot.String())
+	log.Infof("matchSR %v %s %s", matchSR, batches[0].StateRoot.String(), trustedBatch.StateRoot.String())
+	log.Infof("matchCoinbase %v %s %s", matchCoinbase, batches[0].Coinbase.String(), trustedBatch.Coinbase.String())
+	log.Infof("matchTimestamp %v %d %d", matchTimestamp, uint64(batches[0].Timestamp.Unix()), uint64(trustedBatch.Timestamp))
+	log.Infof("matchL2Data %v", matchL2Data)
 	return false
 }
 
@@ -1510,6 +1592,9 @@ func (s *ClientSynchronizer) getCurrentBatches(batches []*state.Batch, trustedBa
 
 func (s *ClientSynchronizer) pendingFlushID(flushID uint64, proverID string) {
 	log.Infof("pending flushID: %d", flushID)
+	if flushID == 0 {
+		log.Fatal("flushID is 0. Please check that prover/executor config parameter dbReadOnly is false")
+	}
 	s.latestFlushID = flushID
 	s.latestFlushIDIsFulfilled = false
 	s.updateAndCheckProverID(proverID)
@@ -1528,7 +1613,7 @@ func (s *ClientSynchronizer) updateAndCheckProverID(proverID string) {
 			Component:   event.Component_Synchronizer,
 			Level:       event.Level_Critical,
 			EventID:     event.EventID_SynchronizerRestart,
-			Description: fmt.Sprintf("proverID changed from %s to %s, restarting Synchonizer ", s.proverID, proverID),
+			Description: fmt.Sprintf("proverID changed from %s to %s, restarting Synchronizer ", s.proverID, proverID),
 		}
 
 		err := s.eventLog.LogEvent(context.Background(), event)
@@ -1536,7 +1621,7 @@ func (s *ClientSynchronizer) updateAndCheckProverID(proverID string) {
 			log.Errorf("error storing event payload: %v", err)
 		}
 
-		log.Fatal("restarting synchronizer because  executor have restarted (old=%s, new=%s)", s.proverID, proverID)
+		log.Fatal("restarting synchronizer because executor has been restarted (old=%s, new=%s)", s.proverID, proverID)
 	}
 }
 
@@ -1550,7 +1635,7 @@ func (s *ClientSynchronizer) checkFlushID(dbTx pgx.Tx) error {
 		log.Error("error getting stored flushID. Error: ", err)
 		return err
 	}
-	if (s.previousExecutorFlushID != storedFlushID) || (s.proverID != proverID) {
+	if s.previousExecutorFlushID != storedFlushID || s.proverID != proverID {
 		log.Infof("executor vs local: flushid=%d/%d, proverID=%s/%s", storedFlushID,
 			s.latestFlushID, proverID, s.proverID)
 	} else {
@@ -1560,7 +1645,7 @@ func (s *ClientSynchronizer) checkFlushID(dbTx pgx.Tx) error {
 	s.updateAndCheckProverID(proverID)
 	log.Debugf("storedFlushID (executor reported): %d, latestFlushID (pending): %d", storedFlushID, s.latestFlushID)
 	if storedFlushID < s.latestFlushID {
-		log.Infof("Synchornized BLOCKED!: Wating for the flushID to be stored. FlushID to be stored: %d. Latest flushID stored: %d", s.latestFlushID, storedFlushID)
+		log.Infof("Synchronized BLOCKED!: Wating for the flushID to be stored. FlushID to be stored: %d. Latest flushID stored: %d", s.latestFlushID, storedFlushID)
 		iteration := 0
 		start := time.Now()
 		for storedFlushID < s.latestFlushID {
@@ -1574,10 +1659,33 @@ func (s *ClientSynchronizer) checkFlushID(dbTx pgx.Tx) error {
 			}
 			iteration++
 		}
-		log.Infof("Synchornizer resumed, flushID stored: %d", s.latestFlushID)
+		log.Infof("Synchronizer resumed, flushID stored: %d", s.latestFlushID)
 	}
 	log.Infof("Pending Flushid fullfiled: %d, executor have write %d", s.latestFlushID, storedFlushID)
 	s.latestFlushIDIsFulfilled = true
 	s.previousExecutorFlushID = storedFlushID
 	return nil
+}
+
+// halt halts the Synchronizer
+func (s *ClientSynchronizer) halt(ctx context.Context, err error) {
+	event := &event.Event{
+		ReceivedAt:  time.Now(),
+		Source:      event.Source_Node,
+		Component:   event.Component_Synchronizer,
+		Level:       event.Level_Critical,
+		EventID:     event.EventID_SynchronizerHalt,
+		Description: fmt.Sprintf("Synchronizer halted due to error: %s", err),
+	}
+
+	eventErr := s.eventLog.LogEvent(ctx, event)
+	if eventErr != nil {
+		log.Errorf("error storing Synchronizer halt event: %v", eventErr)
+	}
+
+	for {
+		log.Errorf("fatal error: %s", err)
+		log.Error("halting the Synchronizer")
+		time.Sleep(5 * time.Second) //nolint:gomnd
+	}
 }

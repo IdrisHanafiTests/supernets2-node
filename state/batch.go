@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/0xPolygonHermez/zkevm-node/hex"
-	"github.com/0xPolygonHermez/zkevm-node/log"
-	"github.com/0xPolygonHermez/zkevm-node/state/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
+	"github.com/0xPolygon/cdk-validium-node/hex"
+	"github.com/0xPolygon/cdk-validium-node/log"
+	"github.com/0xPolygon/cdk-validium-node/state/metrics"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/executor"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/jackc/pgx/v4"
@@ -44,6 +44,7 @@ type ProcessingContext struct {
 	Timestamp      time.Time
 	GlobalExitRoot common.Hash
 	ForcedBatchNum *uint64
+	BatchL2Data    *[]byte
 }
 
 // ClosingReason represents the reason why a batch is closed.

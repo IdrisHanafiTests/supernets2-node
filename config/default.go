@@ -15,7 +15,7 @@ Outputs = ["stderr"]
 User = "state_user"
 Password = "state_password"
 Name = "state_db"
-Host = "supernets2-state-db"
+Host = "cdk-validium-state-db"
 Port = "5432"
 EnableLog = false
 MaxConns = 200
@@ -34,13 +34,14 @@ GlobalQueue = 1024
 	User = "pool_user"
 	Password = "pool_password"
 	Name = "pool_db"
-	Host = "supernets2-pool-db"
+	Host = "cdk-validium-pool-db"
 	Port = "5432"
 	EnableLog = false
 	MaxConns = 200
 
 [Etherman]
 URL = "http://localhost:8545"
+ForkIDChunkSize = 20000
 MultiGasProvider = false
 	[Etherman.Etherscan]
 		ApiKey = ""
@@ -49,6 +50,8 @@ MultiGasProvider = false
 FrequencyToMonitorTxs = "1s"
 WaitTxToBeMined = "2m"
 ForcedGas = 0
+GasPriceMarginFactor = 1
+MaxGasPriceLimit = 0
 
 [RPC]
 Host = "0.0.0.0"
@@ -83,15 +86,6 @@ MaxMemAligns = 236585
 MaxArithmetics = 236585
 MaxBinaries = 473170
 MaxSteps = 7570538
-WeightBatchBytesSize = 1
-WeightCumulativeGasUsed = 1
-WeightKeccakHashes = 1
-WeightPoseidonHashes = 1
-WeightPoseidonPaddings = 1
-WeightMemAligns = 1
-WeightArithmetics = 1
-WeightBinaries = 1
-WeightSteps = 1
 TxLifetimeCheckTimeout = "10m"
 MaxTxLifetime = "3h"
 	[Sequencer.Finalizer]
@@ -106,11 +100,10 @@ MaxTxLifetime = "3h"
 		ForcedBatchesFinalityNumberOfBlocks = 64
 		TimestampResolution = "10s"
 		StopSequencerOnBatchNum = 0
+		SequentialReprocessFullBatch = false
 	[Sequencer.DBManager]
 		PoolRetrievalInterval = "500ms"
 		L2ReorgRetrievalInterval = "5s"
-	[Sequencer.Worker]
-		ResourceCostMultiplier = 1000
 	[Sequencer.EffectiveGasPrice]
 		MaxBreakEvenGasPriceDeviationPercentage = 10
 		L1GasPriceFactor = 0.25
@@ -122,8 +115,8 @@ MaxTxLifetime = "3h"
 WaitPeriodSendSequence = "5s"
 LastBatchVirtualizationTimeMaxWaitPeriod = "5s"
 MaxBatchesForL1 = 1000
-SenderAddress = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
-PrivateKeys = [{Path = "/pk/sequencer.keystore", Password = "testonly"}]
+L2Coinbase = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+PrivateKey = {Path = "/pk/sequencer.keystore", Password = "testonly"}
 
 [Aggregator]
 Host = "0.0.0.0"
@@ -146,10 +139,10 @@ CleanHistoryPeriod = "1h"
 CleanHistoryTimeRetention = "5m"
 
 [MTClient]
-URI = "supernets2-prover:50061"
+URI = "cdk-validium-prover:50061"
 
 [Executor]
-URI = "supernets2-prover:50071"
+URI = "cdk-validium-prover:50071"
 MaxResourceExhaustedAttempts = 3
 WaitOnResourceExhaustion = "1s"
 MaxGRPCMessageSize = 100000000
@@ -163,7 +156,7 @@ Enabled = false
 User = "prover_user"
 Password = "prover_pass"
 Name = "prover_db"
-Host = "supernets2-state-db"
+Host = "cdk-validium-state-db"
 Port = "5432"
 EnableLog = false
 MaxConns = 200

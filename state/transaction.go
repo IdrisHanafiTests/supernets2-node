@@ -9,16 +9,17 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/0xPolygon/supernets2-node/state/runtime/instrumentation"
-	"github.com/0xPolygon/supernets2-node/state/runtime/instrumentation/js"
-	"github.com/0xPolygon/supernets2-node/state/runtime/instrumentation/tracers"
-	"github.com/0xPolygon/supernets2-node/state/runtime/instrumentation/tracers/native"
-	"github.com/0xPolygonHermez/zkevm-node/encoding"
-	"github.com/0xPolygonHermez/zkevm-node/hex"
-	"github.com/0xPolygonHermez/zkevm-node/log"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime/fakevm"
+	"github.com/0xPolygon/cdk-validium-node/encoding"
+	"github.com/0xPolygon/cdk-validium-node/event"
+	"github.com/0xPolygon/cdk-validium-node/hex"
+	"github.com/0xPolygon/cdk-validium-node/log"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/executor"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/fakevm"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/instrumentation"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/instrumentation/js"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/instrumentation/tracers"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/instrumentation/tracers/native"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -320,7 +321,7 @@ func (s *State) DebugTransaction(ctx context.Context, transactionHash common.Has
 		return nil, fmt.Errorf("tx hash not found in executor response")
 	}
 
-	// const path = "/Users/thiago/github.com/0xPolygonHermez/zkevm-node/dist/%v.json"
+	// const path = "/Users/thiago/github.com/0xPolygon/cdk-validium-node/dist/%v.json"
 	// filePath := fmt.Sprintf(path, "EXECUTOR_processBatchResponse")
 	// c, _ := json.MarshalIndent(processBatchResponse, "", "    ")
 	// os.WriteFile(filePath, c, 0644)
@@ -758,6 +759,21 @@ func (s *State) internalProcessUnsignedTransaction(ctx context.Context, tx *type
 		return nil, err
 	}
 
+	stateRoot := l2BlockStateRoot
+	if l2BlockNumber != nil {
+		l2Block, err := s.GetL2BlockByNumber(ctx, *l2BlockNumber, dbTx)
+		if err != nil {
+			return nil, err
+		}
+		stateRoot = l2Block.Root()
+	}
+
+	loadedNonce, err := s.tree.GetNonce(ctx, senderAddress, stateRoot.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	nonce := loadedNonce.Uint64()
+
 	// Get latest batch from the database to get globalExitRoot and Timestamp
 	lastBatch := lastBatches[0]
 
@@ -767,15 +783,9 @@ func (s *State) internalProcessUnsignedTransaction(ctx context.Context, tx *type
 		previousBatch = lastBatches[1]
 	}
 
-	stateRoot := l2BlockStateRoot
 	timestamp := uint64(lastBatch.Timestamp.Unix())
-	if l2BlockNumber != nil {
-		l2Block, err := s.GetL2BlockByNumber(ctx, *l2BlockNumber, dbTx)
-		if err != nil {
-			return nil, err
-		}
-		stateRoot = l2Block.Root()
 
+	if l2BlockNumber != nil {
 		latestL2BlockNumber, err := s.PostgresStorage.GetLastL2BlockNumber(ctx, dbTx)
 		if err != nil {
 			return nil, err
@@ -787,11 +797,6 @@ func (s *State) internalProcessUnsignedTransaction(ctx context.Context, tx *type
 	}
 
 	forkID := s.GetForkIDByBatchNumber(lastBatch.BatchNumber)
-	loadedNonce, err := s.tree.GetNonce(ctx, senderAddress, stateRoot.Bytes())
-	if err != nil {
-		return nil, err
-	}
-	nonce := loadedNonce.Uint64()
 
 	batchL2Data, err := EncodeUnsignedTransaction(*tx, s.cfg.ChainID, &nonce, forkID)
 	if err != nil {
@@ -832,13 +837,13 @@ func (s *State) internalProcessUnsignedTransaction(ctx context.Context, tx *type
 	// Send Batch to the Executor
 	processBatchResponse, err := s.executorClient.ProcessBatch(ctx, processBatchRequest)
 	if err != nil {
-		if status.Code(err) == codes.ResourceExhausted {
+		if status.Code(err) == codes.ResourceExhausted || processBatchResponse.Error == executor.ExecutorError(executor.ExecutorError_EXECUTOR_ERROR_DB_ERROR) {
 			log.Errorf("error processing unsigned transaction ", err)
 			for attempts < s.cfg.MaxResourceExhaustedAttempts {
 				time.Sleep(s.cfg.WaitOnResourceExhaustion.Duration)
 				log.Errorf("retrying to process unsigned transaction")
 				processBatchResponse, err = s.executorClient.ProcessBatch(ctx, processBatchRequest)
-				if status.Code(err) == codes.ResourceExhausted {
+				if status.Code(err) == codes.ResourceExhausted || processBatchResponse.Error == executor.ExecutorError(executor.ExecutorError_EXECUTOR_ERROR_DB_ERROR) {
 					log.Errorf("error processing unsigned transaction ", err)
 					attempts++
 					continue
@@ -848,12 +853,20 @@ func (s *State) internalProcessUnsignedTransaction(ctx context.Context, tx *type
 		}
 
 		if err != nil {
-			if status.Code(err) == codes.ResourceExhausted {
+			if status.Code(err) == codes.ResourceExhausted || processBatchResponse.Error == executor.ExecutorError(executor.ExecutorError_EXECUTOR_ERROR_DB_ERROR) {
 				log.Error("reporting error as time out")
 				return nil, runtime.ErrGRPCResourceExhaustedAsTimeout
 			}
-			// Log this error as an executor unspecified error
-			s.eventLog.LogExecutorError(ctx, executor.ExecutorError_EXECUTOR_ERROR_UNSPECIFIED, processBatchRequest)
+			// Log the error
+			event := &event.Event{
+				ReceivedAt:  time.Now(),
+				Source:      event.Source_Node,
+				Level:       event.Level_Error,
+				EventID:     event.EventID_ExecutorError,
+				Description: fmt.Sprintf("error processing unsigned transaction %s: %v", tx.Hash(), err),
+			}
+
+			err = s.eventLog.LogEvent(context.Background(), event)
 			log.Errorf("error processing unsigned transaction ", err)
 			return nil, err
 		}

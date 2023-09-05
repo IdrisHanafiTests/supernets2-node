@@ -13,18 +13,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/0xPolygonHermez/zkevm-node/encoding"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/etherscan"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/ethgasstation"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/matic"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/polygonzkevmglobalexitroot"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/supernets2"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/supernets2datacommittee"
-	ethmanTypes "github.com/0xPolygonHermez/zkevm-node/etherman/types"
-	"github.com/0xPolygonHermez/zkevm-node/log"
-	"github.com/0xPolygonHermez/zkevm-node/state"
-	"github.com/0xPolygonHermez/zkevm-node/test/operations"
+	"github.com/0xPolygon/cdk-validium-node/encoding"
+	"github.com/0xPolygon/cdk-validium-node/etherman/etherscan"
+	"github.com/0xPolygon/cdk-validium-node/etherman/ethgasstation"
+	"github.com/0xPolygon/cdk-validium-node/etherman/metrics"
+	"github.com/0xPolygon/cdk-validium-node/etherman/smartcontracts/cdkdatacommittee"
+	"github.com/0xPolygon/cdk-validium-node/etherman/smartcontracts/cdkvalidium"
+	"github.com/0xPolygon/cdk-validium-node/etherman/smartcontracts/matic"
+	"github.com/0xPolygon/cdk-validium-node/etherman/smartcontracts/polygonzkevmglobalexitroot"
+	ethmanTypes "github.com/0xPolygon/cdk-validium-node/etherman/types"
+	"github.com/0xPolygon/cdk-validium-node/log"
+	"github.com/0xPolygon/cdk-validium-node/state"
+	"github.com/0xPolygon/cdk-validium-node/test/operations"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -34,6 +34,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -49,7 +50,7 @@ var (
 	transferOwnershipSignatureHash                 = crypto.Keccak256Hash([]byte("OwnershipTransferred(address,address)"))
 	emergencyStateActivatedSignatureHash           = crypto.Keccak256Hash([]byte("EmergencyStateActivated()"))
 	emergencyStateDeactivatedSignatureHash         = crypto.Keccak256Hash([]byte("EmergencyStateDeactivated()"))
-	updateZkEVMVersionSignatureHash                = crypto.Keccak256Hash([]byte("UpdateSupernets2Version(uint64,uint64,string)"))
+	updateZkEVMVersionSignatureHash                = crypto.Keccak256Hash([]byte("UpdateZkEVMVersion(uint64,uint64,string)"))
 	consolidatePendingStateSignatureHash           = crypto.Keccak256Hash([]byte("ConsolidatePendingState(uint64,bytes32,uint64)"))
 	setTrustedAggregatorTimeoutSignatureHash       = crypto.Keccak256Hash([]byte("SetTrustedAggregatorTimeout(uint64)"))
 	setTrustedAggregatorSignatureHash              = crypto.Keccak256Hash([]byte("SetTrustedAggregator(address)"))
@@ -120,13 +121,13 @@ type L1Config struct {
 	// Chain ID of the L1 network
 	L1ChainID uint64 `json:"chainId" validate:"required"`
 	// Address of the L1 contract
-	Supernets2Addr common.Address `json:"supernets2Address" validate:"required"`
+	CDKValidiumAddr common.Address `json:"cdkValidiumAddress" validate:"required"`
 	// Address of the L1 Matic token Contract
 	MaticAddr common.Address `json:"maticTokenAddress" validate:"required"`
 	// Address of the L1 GlobalExitRootManager contract
 	GlobalExitRootManagerAddr common.Address `json:"polygonZkEVMGlobalExitRootAddress" validate:"required"`
 	// Address of the data availability committee contract
-	DataCommitteeAddr common.Address `json:"supernets2DataCommitteeContract" validate:"required"`
+	DataCommitteeAddr common.Address `json:"cdkDataCommitteeContract" validate:"required"`
 }
 
 type externalGasProviders struct {
@@ -137,15 +138,16 @@ type externalGasProviders struct {
 // Client is a simple implementation of EtherMan.
 type Client struct {
 	EthClient             ethereumClient
-	Supernets2            *supernets2.Supernets2
+	CDKValidium           *cdkvalidium.Cdkvalidium
 	GlobalExitRootManager *polygonzkevmglobalexitroot.Polygonzkevmglobalexitroot
 	Matic                 *matic.Matic
-	DataCommittee         *supernets2datacommittee.Supernets2datacommittee
+	DataCommittee         *cdkdatacommittee.Cdkdatacommittee
 	SCAddresses           []common.Address
 
 	GasProviders externalGasProviders
 
 	l1Cfg L1Config
+	cfg   Config
 	auth  map[common.Address]bind.TransactOpts // empty in case of read-only client
 }
 
@@ -158,7 +160,7 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 		return nil, err
 	}
 	// Create smc clients
-	poe, err := supernets2.NewSupernets2(l1Config.Supernets2Addr, ethClient)
+	poe, err := cdkvalidium.NewCdkvalidium(l1Config.CDKValidiumAddr, ethClient)
 	if err != nil {
 		return nil, err
 	}
@@ -170,12 +172,12 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataCommittee, err := supernets2datacommittee.NewSupernets2datacommittee(l1Config.DataCommitteeAddr, ethClient)
+	dataCommittee, err := cdkdatacommittee.NewCdkdatacommittee(l1Config.DataCommitteeAddr, ethClient)
 	if err != nil {
 		return nil, err
 	}
 	var scAddresses []common.Address
-	scAddresses = append(scAddresses, l1Config.Supernets2Addr, l1Config.GlobalExitRootManagerAddr)
+	scAddresses = append(scAddresses, l1Config.CDKValidiumAddr, l1Config.GlobalExitRootManagerAddr)
 
 	gProviders := []ethereum.GasPricer{ethClient}
 	if cfg.MultiGasProvider {
@@ -191,7 +193,7 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 
 	return &Client{
 		EthClient:             ethClient,
-		Supernets2:            poe,
+		CDKValidium:           poe,
 		Matic:                 matic,
 		GlobalExitRootManager: globalExitRoot,
 		DataCommittee:         dataCommittee,
@@ -201,6 +203,7 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 			Providers:        gProviders,
 		},
 		l1Cfg: l1Config,
+		cfg:   cfg,
 		auth:  map[common.Address]bind.TransactOpts{},
 	}, nil
 }
@@ -224,7 +227,7 @@ func (etherMan *Client) VerifyGenBlockNumber(ctx context.Context, genBlockNumber
 	if len(logs) == 0 {
 		return false, fmt.Errorf("the specified genBlockNumber in config file does not contain any forkID event. Please use the proper blockNumber.")
 	}
-	zkevmVersion, err := etherMan.Supernets2.ParseUpdateSupernets2Version(logs[0])
+	zkevmVersion, err := etherMan.CDKValidium.ParseUpdateZkEVMVersion(logs[0])
 	if err != nil {
 		log.Error("error parsing the forkID event")
 		return false, err
@@ -237,22 +240,35 @@ func (etherMan *Client) VerifyGenBlockNumber(ctx context.Context, genBlockNumber
 }
 
 // GetForks returns fork information
-func (etherMan *Client) GetForks(ctx context.Context, genBlockNumber uint64) ([]state.ForkIDInterval, error) {
+func (etherMan *Client) GetForks(ctx context.Context, genBlockNumber uint64, lastL1BlockSynced uint64) ([]state.ForkIDInterval, error) {
 	log.Debug("Getting forkIDs from blockNumber: ", genBlockNumber)
 	start := time.Now()
-	// Filter query
-	query := ethereum.FilterQuery{
-		FromBlock: new(big.Int).SetUint64(genBlockNumber),
-		Addresses: etherMan.SCAddresses,
-		Topics:    [][]common.Hash{{updateZkEVMVersionSignatureHash}},
+	var logs []types.Log
+	log.Debug("Using ForkIDChunkSize: ", etherMan.cfg.ForkIDChunkSize)
+	for i := genBlockNumber; i <= lastL1BlockSynced; i = i + etherMan.cfg.ForkIDChunkSize + 1 {
+		final := i + etherMan.cfg.ForkIDChunkSize
+		if final > lastL1BlockSynced {
+			// Limit the query to the last l1BlockSynced
+			final = lastL1BlockSynced
+		}
+		log.Debug("INTERVAL. Initial: ", i, ". Final: ", final)
+		// Filter query
+		query := ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(i),
+			ToBlock:   new(big.Int).SetUint64(final),
+			Addresses: etherMan.SCAddresses,
+			Topics:    [][]common.Hash{{updateZkEVMVersionSignatureHash}},
+		}
+		l, err := etherMan.EthClient.FilterLogs(ctx, query)
+		if err != nil {
+			return []state.ForkIDInterval{}, err
+		}
+		logs = append(logs, l...)
 	}
-	logs, err := etherMan.EthClient.FilterLogs(ctx, query)
-	if err != nil {
-		return []state.ForkIDInterval{}, err
-	}
+
 	var forks []state.ForkIDInterval
 	for i, l := range logs {
-		zkevmVersion, err := etherMan.Supernets2.ParseUpdateSupernets2Version(l)
+		zkevmVersion, err := etherMan.CDKValidium.ParseUpdateZkEVMVersion(l)
 		if err != nil {
 			return []state.ForkIDInterval{}, err
 		}
@@ -263,6 +279,7 @@ func (etherMan *Client) GetForks(ctx context.Context, genBlockNumber uint64) ([]
 				ToBatchNumber:   math.MaxUint64,
 				ForkId:          zkevmVersion.ForkID,
 				Version:         zkevmVersion.Version,
+				BlockNumber:     l.BlockNumber,
 			}
 		} else {
 			forks[len(forks)-1].ToBatchNumber = zkevmVersion.NumBatch
@@ -271,12 +288,13 @@ func (etherMan *Client) GetForks(ctx context.Context, genBlockNumber uint64) ([]
 				ToBatchNumber:   math.MaxUint64,
 				ForkId:          zkevmVersion.ForkID,
 				Version:         zkevmVersion.Version,
+				BlockNumber:     l.BlockNumber,
 			}
 		}
 		forks = append(forks, fork)
 	}
 	metrics.GetForksTime(time.Since(start))
-	log.Debugf("Forks decoded: %+v", forks)
+	log.Debugf("ForkIDs found: %+v", forks)
 	return forks, nil
 }
 
@@ -416,7 +434,7 @@ func (etherMan *Client) processEvent(ctx context.Context, vLog types.Log, blocks
 
 func (etherMan *Client) updateZkevmVersion(ctx context.Context, vLog types.Log, blocks *[]Block, blocksOrder *map[common.Hash][]Order) error {
 	log.Debug("UpdateZkEVMVersion event detected")
-	zkevmVersion, err := etherMan.Supernets2.ParseUpdateSupernets2Version(vLog)
+	zkevmVersion, err := etherMan.CDKValidium.ParseUpdateZkEVMVersion(vLog)
 	if err != nil {
 		log.Error("error parsing UpdateZkEVMVersion event. Error: ", err)
 		return err
@@ -500,6 +518,7 @@ func (etherMan *Client) WaitTxToBeMined(ctx context.Context, tx *types.Transacti
 func (etherMan *Client) EstimateGasSequenceBatches(
 	sender common.Address,
 	sequences []ethmanTypes.Sequence,
+	l2Coinbase common.Address,
 	committeeSignaturesAndAddrs []byte,
 ) (*types.Transaction, error) {
 	opts, err := etherMan.getAuthByAddress(sender)
@@ -508,7 +527,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(
 	}
 	opts.NoSend = true
 
-	tx, err := etherMan.sequenceBatches(opts, sequences, committeeSignaturesAndAddrs)
+	tx, err := etherMan.sequenceBatches(opts, sequences, l2Coinbase, committeeSignaturesAndAddrs)
 	if err != nil {
 		return nil, err
 	}
@@ -520,6 +539,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(
 func (etherMan *Client) BuildSequenceBatchesTxData(
 	sender common.Address,
 	sequences []ethmanTypes.Sequence,
+	l2Coinbase common.Address,
 	committeeSignaturesAndAddrs []byte,
 ) (to *common.Address, data []byte, err error) {
 	opts, err := etherMan.getAuthByAddress(sender)
@@ -532,7 +552,7 @@ func (etherMan *Client) BuildSequenceBatchesTxData(
 	opts.GasLimit = uint64(1)
 	opts.GasPrice = big.NewInt(1)
 
-	tx, err := etherMan.sequenceBatches(opts, sequences, committeeSignaturesAndAddrs)
+	tx, err := etherMan.sequenceBatches(opts, sequences, l2Coinbase, committeeSignaturesAndAddrs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -543,11 +563,12 @@ func (etherMan *Client) BuildSequenceBatchesTxData(
 func (etherMan *Client) sequenceBatches(
 	opts bind.TransactOpts,
 	sequences []ethmanTypes.Sequence,
+	l2Coinbase common.Address,
 	committeeSignaturesAndAddrs []byte,
 ) (*types.Transaction, error) {
-	var batches []supernets2.Supernets2BatchData
+	var batches []cdkvalidium.CDKValidiumBatchData
 	for _, seq := range sequences {
-		batch := supernets2.Supernets2BatchData{
+		batch := cdkvalidium.CDKValidiumBatchData{
 			TransactionsHash:   crypto.Keccak256Hash(seq.BatchL2Data),
 			GlobalExitRoot:     seq.GlobalExitRoot,
 			Timestamp:          uint64(seq.Timestamp),
@@ -557,7 +578,7 @@ func (etherMan *Client) sequenceBatches(
 		batches = append(batches, batch)
 	}
 
-	tx, err := etherMan.Supernets2.SequenceBatches(&opts, batches, opts.From, committeeSignaturesAndAddrs)
+	tx, err := etherMan.CDKValidium.SequenceBatches(&opts, batches, l2Coinbase, committeeSignaturesAndAddrs)
 	if err != nil {
 		if parsedErr, ok := tryParseError(err); ok {
 			err = parsedErr
@@ -597,7 +618,7 @@ func (etherMan *Client) BuildTrustedVerifyBatchesTxData(lastVerifiedBatch, newVe
 
 	const pendStateNum = 0 // TODO hardcoded for now until we implement the pending state feature
 
-	tx, err := etherMan.Supernets2.VerifyBatchesTrustedAggregator(
+	tx, err := etherMan.CDKValidium.VerifyBatchesTrustedAggregator(
 		&opts,
 		pendStateNum,
 		lastVerifiedBatch,
@@ -637,7 +658,7 @@ func convertProof(p string) ([24][32]byte, error) {
 
 // GetSendSequenceFee get super/trusted sequencer fee
 func (etherMan *Client) GetSendSequenceFee(numBatches uint64) (*big.Int, error) {
-	f, err := etherMan.Supernets2.BatchFee(&bind.CallOpts{Pending: false})
+	f, err := etherMan.CDKValidium.BatchFee(&bind.CallOpts{Pending: false})
 	if err != nil {
 		return nil, err
 	}
@@ -647,12 +668,12 @@ func (etherMan *Client) GetSendSequenceFee(numBatches uint64) (*big.Int, error) 
 
 // TrustedSequencer gets trusted sequencer address
 func (etherMan *Client) TrustedSequencer() (common.Address, error) {
-	return etherMan.Supernets2.TrustedSequencer(&bind.CallOpts{Pending: false})
+	return etherMan.CDKValidium.TrustedSequencer(&bind.CallOpts{Pending: false})
 }
 
 func (etherMan *Client) forcedBatchEvent(ctx context.Context, vLog types.Log, blocks *[]Block, blocksOrder *map[common.Hash][]Order) error {
 	log.Debug("ForceBatch event detected")
-	fb, err := etherMan.Supernets2.ParseForceBatch(vLog)
+	fb, err := etherMan.CDKValidium.ParseForceBatch(vLog)
 	if err != nil {
 		return err
 	}
@@ -675,7 +696,7 @@ func (etherMan *Client) forcedBatchEvent(ctx context.Context, vLog types.Log, bl
 		txData := tx.Data()
 		// Extract coded txs.
 		// Load contract ABI
-		abi, err := abi.JSON(strings.NewReader(supernets2.Supernets2ABI))
+		abi, err := abi.JSON(strings.NewReader(cdkvalidium.CdkvalidiumABI))
 		if err != nil {
 			return err
 		}
@@ -723,7 +744,7 @@ func (etherMan *Client) forcedBatchEvent(ctx context.Context, vLog types.Log, bl
 
 func (etherMan *Client) sequencedBatchesEvent(ctx context.Context, vLog types.Log, blocks *[]Block, blocksOrder *map[common.Hash][]Order) error {
 	log.Debug("SequenceBatches event detected")
-	sb, err := etherMan.Supernets2.ParseSequenceBatches(vLog)
+	sb, err := etherMan.CDKValidium.ParseSequenceBatches(vLog)
 	if err != nil {
 		return err
 	}
@@ -768,7 +789,7 @@ func (etherMan *Client) sequencedBatchesEvent(ctx context.Context, vLog types.Lo
 func decodeSequences(txData []byte, lastBatchNumber uint64, sequencer common.Address, txHash common.Hash, nonce uint64) ([]SequencedBatch, error) {
 	// Extract coded txs.
 	// Load contract ABI
-	abi, err := abi.JSON(strings.NewReader(supernets2.Supernets2ABI))
+	abi, err := abi.JSON(strings.NewReader(cdkvalidium.CdkvalidiumABI))
 	if err != nil {
 		return nil, err
 	}
@@ -784,7 +805,7 @@ func decodeSequences(txData []byte, lastBatchNumber uint64, sequencer common.Add
 	if err != nil {
 		return nil, err
 	}
-	var sequences []supernets2.Supernets2BatchData
+	var sequences []cdkvalidium.CDKValidiumBatchData
 	bytedata, err := json.Marshal(data[0])
 	if err != nil {
 		return nil, err
@@ -798,12 +819,12 @@ func decodeSequences(txData []byte, lastBatchNumber uint64, sequencer common.Add
 	for i, seq := range sequences {
 		bn := lastBatchNumber - uint64(len(sequences)-(i+1))
 		sequencedBatches[i] = SequencedBatch{
-			BatchNumber:         bn,
-			SequencerAddr:       sequencer,
-			TxHash:              txHash,
-			Nonce:               nonce,
-			Coinbase:            coinbase,
-			Supernets2BatchData: seq,
+			BatchNumber:          bn,
+			SequencerAddr:        sequencer,
+			TxHash:               txHash,
+			Nonce:                nonce,
+			Coinbase:             coinbase,
+			CDKValidiumBatchData: seq,
 		}
 	}
 
@@ -812,7 +833,7 @@ func decodeSequences(txData []byte, lastBatchNumber uint64, sequencer common.Add
 
 func (etherMan *Client) verifyBatchesTrustedAggregatorEvent(ctx context.Context, vLog types.Log, blocks *[]Block, blocksOrder *map[common.Hash][]Order) error {
 	log.Debug("TrustedVerifyBatches event detected")
-	vb, err := etherMan.Supernets2.ParseVerifyBatchesTrustedAggregator(vLog)
+	vb, err := etherMan.CDKValidium.ParseVerifyBatchesTrustedAggregator(vLog)
 	if err != nil {
 		return err
 	}
@@ -847,7 +868,7 @@ func (etherMan *Client) verifyBatchesTrustedAggregatorEvent(ctx context.Context,
 
 func (etherMan *Client) forceSequencedBatchesEvent(ctx context.Context, vLog types.Log, blocks *[]Block, blocksOrder *map[common.Hash][]Order) error {
 	log.Debug("SequenceForceBatches event detect")
-	fsb, err := etherMan.Supernets2.ParseSequenceForceBatches(vLog)
+	fsb, err := etherMan.CDKValidium.ParseSequenceForceBatches(vLog)
 	if err != nil {
 		return err
 	}
@@ -894,7 +915,7 @@ func (etherMan *Client) forceSequencedBatchesEvent(ctx context.Context, vLog typ
 func decodeSequencedForceBatches(txData []byte, lastBatchNumber uint64, sequencer common.Address, txHash common.Hash, block *types.Block, nonce uint64) ([]SequencedForceBatch, error) {
 	// Extract coded txs.
 	// Load contract ABI
-	abi, err := abi.JSON(strings.NewReader(supernets2.Supernets2ABI))
+	abi, err := abi.JSON(strings.NewReader(cdkvalidium.CdkvalidiumABI))
 	if err != nil {
 		return nil, err
 	}
@@ -911,7 +932,7 @@ func decodeSequencedForceBatches(txData []byte, lastBatchNumber uint64, sequence
 		return nil, err
 	}
 
-	var forceBatches []supernets2.Supernets2ForcedBatchData
+	var forceBatches []cdkvalidium.CDKValidiumForcedBatchData
 	bytedata, err := json.Marshal(data[0])
 	if err != nil {
 		return nil, err
@@ -925,12 +946,12 @@ func decodeSequencedForceBatches(txData []byte, lastBatchNumber uint64, sequence
 	for i, force := range forceBatches {
 		bn := lastBatchNumber - uint64(len(forceBatches)-(i+1))
 		sequencedForcedBatches[i] = SequencedForceBatch{
-			BatchNumber:               bn,
-			Coinbase:                  sequencer,
-			TxHash:                    txHash,
-			Timestamp:                 time.Unix(int64(block.Time()), 0),
-			Nonce:                     nonce,
-			Supernets2ForcedBatchData: force,
+			BatchNumber:                bn,
+			Coinbase:                   sequencer,
+			TxHash:                     txHash,
+			Timestamp:                  time.Unix(int64(block.Time()), 0),
+			Nonce:                      nonce,
+			CDKValidiumForcedBatchData: force,
 		}
 	}
 	return sequencedForcedBatches, nil
@@ -975,17 +996,32 @@ func (etherMan *Client) EthBlockByNumber(ctx context.Context, blockNumber uint64
 
 // GetLastBatchTimestamp function allows to retrieve the lastTimestamp value in the smc
 func (etherMan *Client) GetLastBatchTimestamp() (uint64, error) {
-	return etherMan.Supernets2.LastTimestamp(&bind.CallOpts{Pending: false})
+	return etherMan.CDKValidium.LastTimestamp(&bind.CallOpts{Pending: false})
 }
 
 // GetLatestBatchNumber function allows to retrieve the latest proposed batch in the smc
 func (etherMan *Client) GetLatestBatchNumber() (uint64, error) {
-	return etherMan.Supernets2.LastBatchSequenced(&bind.CallOpts{Pending: false})
+	return etherMan.CDKValidium.LastBatchSequenced(&bind.CallOpts{Pending: false})
 }
 
 // GetLatestBlockNumber gets the latest block number from the ethereum
 func (etherMan *Client) GetLatestBlockNumber(ctx context.Context) (uint64, error) {
-	header, err := etherMan.EthClient.HeaderByNumber(ctx, nil)
+	return etherMan.getBlockNumber(ctx, rpc.LatestBlockNumber)
+}
+
+// GetSafeBlockNumber gets the safe block number from the ethereum
+func (etherMan *Client) GetSafeBlockNumber(ctx context.Context) (uint64, error) {
+	return etherMan.getBlockNumber(ctx, rpc.SafeBlockNumber)
+}
+
+// GetFinalizedBlockNumber gets the Finalized block number from the ethereum
+func (etherMan *Client) GetFinalizedBlockNumber(ctx context.Context) (uint64, error) {
+	return etherMan.getBlockNumber(ctx, rpc.FinalizedBlockNumber)
+}
+
+// getBlockNumber gets the block header by the provided block number from the ethereum
+func (etherMan *Client) getBlockNumber(ctx context.Context, blockNumber rpc.BlockNumber) (uint64, error) {
+	header, err := etherMan.EthClient.HeaderByNumber(ctx, big.NewInt(int64(blockNumber)))
 	if err != nil || header == nil {
 		return 0, err
 	}
@@ -1003,7 +1039,7 @@ func (etherMan *Client) GetLatestBlockTimestamp(ctx context.Context) (uint64, er
 
 // GetLatestVerifiedBatchNum gets latest verified batch from ethereum
 func (etherMan *Client) GetLatestVerifiedBatchNum() (uint64, error) {
-	return etherMan.Supernets2.LastVerifiedBatch(&bind.CallOpts{Pending: false})
+	return etherMan.CDKValidium.LastVerifiedBatch(&bind.CallOpts{Pending: false})
 }
 
 // GetTx function get ethereum tx
@@ -1025,7 +1061,7 @@ func (etherMan *Client) ApproveMatic(ctx context.Context, account common.Address
 	if etherMan.GasProviders.MultiGasProvider {
 		opts.GasPrice = etherMan.GetL1GasPrice(ctx)
 	}
-	tx, err := etherMan.Matic.Approve(&opts, etherMan.l1Cfg.Supernets2Addr, maticAmount)
+	tx, err := etherMan.Matic.Approve(&opts, etherMan.l1Cfg.CDKValidiumAddr, maticAmount)
 	if err != nil {
 		if parsedErr, ok := tryParseError(err); ok {
 			err = parsedErr
@@ -1038,12 +1074,12 @@ func (etherMan *Client) ApproveMatic(ctx context.Context, account common.Address
 
 // GetTrustedSequencerURL Gets the trusted sequencer url from rollup smc
 func (etherMan *Client) GetTrustedSequencerURL() (string, error) {
-	return etherMan.Supernets2.TrustedSequencerURL(&bind.CallOpts{Pending: false})
+	return etherMan.CDKValidium.TrustedSequencerURL(&bind.CallOpts{Pending: false})
 }
 
 // GetL2ChainID returns L2 Chain ID
 func (etherMan *Client) GetL2ChainID() (uint64, error) {
-	return etherMan.Supernets2.ChainID(&bind.CallOpts{Pending: false})
+	return etherMan.CDKValidium.ChainID(&bind.CallOpts{Pending: false})
 }
 
 // GetL1GasPrice gets the l1 gas price

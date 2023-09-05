@@ -5,10 +5,10 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/0xPolygonHermez/zkevm-node/event"
-	"github.com/0xPolygonHermez/zkevm-node/merkletree"
-	"github.com/0xPolygonHermez/zkevm-node/state/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
+	"github.com/0xPolygon/cdk-validium-node/event"
+	"github.com/0xPolygon/cdk-validium-node/merkletree"
+	"github.com/0xPolygon/cdk-validium-node/state/metrics"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/executor"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/jackc/pgx/v4"
@@ -139,7 +139,7 @@ func (s *State) FlushMerkleTree(ctx context.Context) error {
 	if s.tree == nil {
 		return ErrStateTreeNil
 	}
-	return s.tree.Flush(ctx)
+	return s.tree.Flush(ctx, "")
 }
 
 // GetStoredFlushID returns the stored flush ID and Prover ID

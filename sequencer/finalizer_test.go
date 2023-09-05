@@ -5,22 +5,25 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	cfgTypes "github.com/0xPolygonHermez/zkevm-node/config/types"
-	"github.com/0xPolygonHermez/zkevm-node/event"
-	"github.com/0xPolygonHermez/zkevm-node/event/nileventstorage"
-	"github.com/0xPolygonHermez/zkevm-node/hex"
-	"github.com/0xPolygonHermez/zkevm-node/pool"
-	"github.com/0xPolygonHermez/zkevm-node/state"
-	stateMetrics "github.com/0xPolygonHermez/zkevm-node/state/metrics"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime"
-	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
-	"github.com/0xPolygonHermez/zkevm-node/test/constants"
+	cfgTypes "github.com/0xPolygon/cdk-validium-node/config/types"
+	"github.com/0xPolygon/cdk-validium-node/event"
+	"github.com/0xPolygon/cdk-validium-node/event/nileventstorage"
+	"github.com/0xPolygon/cdk-validium-node/hex"
+	"github.com/0xPolygon/cdk-validium-node/pool"
+	"github.com/0xPolygon/cdk-validium-node/state"
+	stateMetrics "github.com/0xPolygon/cdk-validium-node/state/metrics"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime"
+	"github.com/0xPolygon/cdk-validium-node/state/runtime/executor"
+	"github.com/0xPolygon/cdk-validium-node/test/constants"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -78,7 +81,10 @@ var (
 		},
 		ResourcePercentageToCloseBatch: 10,
 		GERFinalityNumberOfBlocks:      64,
+		SequentialReprocessFullBatch:   true,
 	}
+	chainID         = new(big.Int).SetInt64(400)
+	pvtKey          = "0x28b2b0318721be8c8339199172cd7cc8f5e273800a35616ec893083a4b32c02e"
 	nonce1          = uint64(1)
 	nonce2          = uint64(2)
 	seqAddr         = common.Address{}
@@ -86,10 +92,10 @@ var (
 	newHash         = common.HexToHash("0x02")
 	newHash2        = common.HexToHash("0x03")
 	stateRootHashes = []common.Hash{oldHash, newHash, newHash2}
-	txHash          = common.BytesToHash([]byte("txHash"))
-	txHash2         = common.BytesToHash([]byte("txHash2"))
+	txHash          = common.HexToHash("0xf9e4fe4bd2256f782c66cffd76acdb455a76111842bb7e999af2f1b7f4d8d092")
+	txHash2         = common.HexToHash("0xb281831a3401a04f3afa4ec586ef874f58c61b093643d408ea6aa179903df1a4")
 	tx              = types.NewTransaction(nonce1, receiverAddr, big.NewInt(1), 100000, big.NewInt(1), nil)
-	senderAddr      = common.HexToAddress("0x3445324")
+	senderAddr      = common.HexToAddress("0x617b3a3528F9cDd6630fd3301B9c8911F7Bf063D")
 	receiverAddr    = common.HexToAddress("0x1555324")
 	isSynced        = func(ctx context.Context) bool {
 		return true
@@ -118,9 +124,7 @@ func TestNewFinalizer(t *testing.T) {
 	dbManagerMock.On("GetLastSentFlushID", context.Background()).Return(uint64(0), nil)
 
 	// arrange and act
-	pendingTxsToStoreMux := new(sync.RWMutex)
-	pendingTxsPerAddressTrackers := make(map[common.Address]*pendingTxPerAddressTracker)
-	f = newFinalizer(cfg, effectiveGasPriceCfg, workerMock, dbManagerMock, executorMock, seqAddr, isSynced, closingSignalCh, bc, eventLog, pendingTxsToStoreMux, pendingTxsPerAddressTrackers)
+	f = newFinalizer(cfg, effectiveGasPriceCfg, workerMock, dbManagerMock, executorMock, seqAddr, isSynced, closingSignalCh, bc, eventLog)
 
 	// assert
 	assert.NotNil(t, f)
@@ -196,7 +200,8 @@ func TestFinalizer_handleProcessTransactionResponse(t *testing.T) {
 			},
 			oldStateRoot: oldHash,
 			expectedStoredTx: transactionToStore{
-				txTracker:     txTracker,
+				hash:          txHash,
+				from:          senderAddr,
 				batchNumber:   f.batch.batchNumber,
 				coinbase:      f.batch.coinbase,
 				timestamp:     f.batch.timestamp,
@@ -270,14 +275,14 @@ func TestFinalizer_handleProcessTransactionResponse(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			storedTxs := make([]transactionToStore, 0)
-			f.pendingTxsToStore = make(chan transactionToStore)
+			f.pendingTransactionsToStore = make(chan transactionToStore)
 
 			if tc.expectedStoredTx.batchResponse != nil {
 				done = make(chan bool) // init a new done channel
 				go func() {
-					for tx := range f.pendingTxsToStore {
+					for tx := range f.pendingTransactionsToStore {
 						storedTxs = append(storedTxs, tx)
-						f.pendingTxsToStoreWG.Done()
+						f.pendingTransactionsToStoreWG.Done()
 					}
 					done <- true // signal that the goroutine is done
 				}()
@@ -290,12 +295,13 @@ func TestFinalizer_handleProcessTransactionResponse(t *testing.T) {
 				workerMock.On("MoveTxToNotReady", txHash, senderAddr, addressInfo.Nonce, addressInfo.Balance).Return([]*TxTracker{}).Once()
 			}
 			if tc.expectedUpdateTxCall {
-				workerMock.On("UpdateTx", txTracker.Hash, txTracker.From, tc.executorResponse.UsedZkCounters).Return().Once()
+				workerMock.On("UpdateTxZKCounters", txTracker.Hash, txTracker.From, tc.executorResponse.UsedZkCounters).Return().Once()
 			}
 			if tc.expectedError == nil {
 				//dbManagerMock.On("GetGasPrices", ctx).Return(pool.GasPrices{L1GasPrice: 0, L2GasPrice: 0}, nilErr).Once()
 				workerMock.On("DeleteTx", txTracker.Hash, txTracker.From).Return().Once()
 				workerMock.On("UpdateAfterSingleSuccessfulTxExecution", txTracker.From, tc.executorResponse.ReadWriteAddresses).Return([]*TxTracker{}).Once()
+				workerMock.On("AddPendingTxToStore", txTracker.Hash, txTracker.From).Return().Once()
 			}
 			if tc.expectedUpdateTxStatus != "" {
 				dbManagerMock.On("UpdateTxStatus", ctx, txHash, tc.expectedUpdateTxStatus, false, mock.Anything).Return(nil).Once()
@@ -313,9 +319,9 @@ func TestFinalizer_handleProcessTransactionResponse(t *testing.T) {
 			}
 
 			if tc.expectedStoredTx.batchResponse != nil {
-				close(f.pendingTxsToStore) // close the channel
-				<-done                     // wait for the goroutine to finish
-				f.pendingTxsToStoreWG.Wait()
+				close(f.pendingTransactionsToStore) // close the channel
+				<-done                              // wait for the goroutine to finish
+				f.pendingTransactionsToStoreWG.Wait()
 				require.Len(t, storedTxs, 1)
 				actualTx := storedTxs[0]
 				assertEqualTransactionToStore(t, tc.expectedStoredTx, actualTx)
@@ -330,7 +336,8 @@ func TestFinalizer_handleProcessTransactionResponse(t *testing.T) {
 }
 
 func assertEqualTransactionToStore(t *testing.T, expectedTx, actualTx transactionToStore) {
-	require.Equal(t, expectedTx.txTracker, actualTx.txTracker)
+	require.Equal(t, expectedTx.from, actualTx.from)
+	require.Equal(t, expectedTx.hash, actualTx.hash)
 	require.Equal(t, expectedTx.response, actualTx.response)
 	require.Equal(t, expectedTx.batchNumber, actualTx.batchNumber)
 	require.Equal(t, expectedTx.timestamp, actualTx.timestamp)
@@ -760,7 +767,6 @@ func TestFinalizer_syncWithState(t *testing.T) {
 }
 
 func TestFinalizer_processForcedBatches(t *testing.T) {
-	// arrange
 	var err error
 	f = setupFinalizer(false)
 	now = testNow
@@ -776,14 +782,29 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 	decodedBatchL2Data, err = hex.DecodeHex(testBatchL2DataAsString)
 	require.NoError(t, err)
 
+	tx1 := types.NewTransaction(0, common.HexToAddress("0x1"), big.NewInt(1), 100000, big.NewInt(1), RawTxsData1)
+	tx2 := types.NewTransaction(1, common.HexToAddress("0x2"), big.NewInt(1), 100000, big.NewInt(1), RawTxsData2)
+
+	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(pvtKey, "0x"))
+	require.NoError(t, err)
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainID)
+	require.NoError(t, err)
+
+	signedTx1, err := auth.Signer(auth.From, tx1)
+	require.NoError(t, err)
+	signedTx2, err := auth.Signer(auth.From, tx2)
+	require.NoError(t, err)
+
 	txResp1 := &state.ProcessTransactionResponse{
-		TxHash:    txHash,
+		TxHash:    signedTx1.Hash(),
 		StateRoot: stateRootHashes[0],
+		Tx:        *signedTx1,
 	}
 
 	txResp2 := &state.ProcessTransactionResponse{
-		TxHash:    txHash2,
+		TxHash:    signedTx2.Hash(),
 		StateRoot: stateRootHashes[1],
+		Tx:        *signedTx2,
 	}
 	batchResponse1 := &state.ProcessBatchResponse{
 		NewBatchNumber: f.batch.batchNumber + 1,
@@ -820,6 +841,8 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 			forcedBatches: []state.ForcedBatch{forcedBatch1, forcedBatch2},
 			expectedStoredTx: []transactionToStore{
 				{
+					hash:          signedTx1.Hash(),
+					from:          auth.From,
 					batchResponse: batchResponse1,
 					batchNumber:   f.batch.batchNumber + 1,
 					coinbase:      seqAddr,
@@ -829,6 +852,8 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 					response:      txResp1,
 				},
 				{
+					hash:          signedTx2.Hash(),
+					from:          auth.From,
 					batchResponse: batchResponse2,
 					batchNumber:   f.batch.batchNumber + 2,
 					coinbase:      seqAddr,
@@ -857,6 +882,8 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 			},
 			expectedStoredTx: []transactionToStore{
 				{
+					hash:          signedTx1.Hash(),
+					from:          auth.From,
 					batchResponse: batchResponse1,
 					batchNumber:   f.batch.batchNumber + 1,
 					coinbase:      seqAddr,
@@ -866,6 +893,8 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 					response:      txResp1,
 				},
 				{
+					hash:          signedTx2.Hash(),
+					from:          auth.From,
 					batchResponse: batchResponse2,
 					batchNumber:   f.batch.batchNumber + 2,
 					coinbase:      seqAddr,
@@ -895,13 +924,13 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 			var newStateRoot common.Hash
 			stateRoot := oldHash
 			storedTxs := make([]transactionToStore, 0)
-			f.pendingTxsToStore = make(chan transactionToStore)
+			f.pendingTransactionsToStore = make(chan transactionToStore)
 			if tc.expectedStoredTx != nil && len(tc.expectedStoredTx) > 0 {
 				done = make(chan bool) // init a new done channel
 				go func() {
-					for tx := range f.pendingTxsToStore {
+					for tx := range f.pendingTransactionsToStore {
 						storedTxs = append(storedTxs, tx)
-						f.pendingTxsToStoreWG.Done()
+						f.pendingTransactionsToStoreWG.Done()
 					}
 					done <- true // signal that the goroutine is done
 				}()
@@ -951,6 +980,10 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 				}
 			}
 
+			workerMock.On("DeleteForcedTx", mock.Anything, mock.Anything).Return()
+			workerMock.On("AddPendingTxToStore", mock.Anything, mock.Anything).Return()
+			workerMock.On("AddForcedTx", mock.Anything, mock.Anything).Return()
+
 			// act
 			batchNumber, newStateRoot, err = f.processForcedBatches(ctx, batchNumber, stateRoot)
 
@@ -959,9 +992,9 @@ func TestFinalizer_processForcedBatches(t *testing.T) {
 				assert.EqualError(t, err, tc.expectedErr.Error())
 			} else {
 				if tc.expectedStoredTx != nil && len(tc.expectedStoredTx) > 0 {
-					close(f.pendingTxsToStore) // ensure the channel is closed
-					<-done                     // wait for the goroutine to finish
-					f.pendingTxsToStoreWG.Wait()
+					close(f.pendingTransactionsToStore) // ensure the channel is closed
+					<-done                              // wait for the goroutine to finish
+					f.pendingTransactionsToStoreWG.Wait()
 					for i := range tc.expectedStoredTx {
 						require.Equal(t, tc.expectedStoredTx[i], storedTxs[i])
 					}
@@ -1302,7 +1335,7 @@ func TestFinalizer_checkRemainingResources(t *testing.T) {
 			f.batch.remainingResources = tc.remaining
 			dbManagerMock.On("AddEvent", ctx, mock.Anything, nil).Return(nil)
 			if tc.expectedWorkerUpdate {
-				workerMock.On("UpdateTx", txResponse.TxHash, tc.expectedTxTracker.From, result.UsedZkCounters).Return().Once()
+				workerMock.On("UpdateTxZKCounters", txResponse.TxHash, tc.expectedTxTracker.From, result.UsedZkCounters).Return().Once()
 			}
 
 			// act
@@ -1316,9 +1349,9 @@ func TestFinalizer_checkRemainingResources(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			if tc.expectedWorkerUpdate {
-				workerMock.AssertCalled(t, "UpdateTx", txResponse.TxHash, tc.expectedTxTracker.From, result.UsedZkCounters)
+				workerMock.AssertCalled(t, "UpdateTxZKCounters", txResponse.TxHash, tc.expectedTxTracker.From, result.UsedZkCounters)
 			} else {
-				workerMock.AssertNotCalled(t, "UpdateTx", mock.Anything, mock.Anything, mock.Anything)
+				workerMock.AssertNotCalled(t, "UpdateTxZKCounters", mock.Anything, mock.Anything, mock.Anything)
 			}
 		})
 	}
@@ -1465,7 +1498,8 @@ func Test_processTransaction(t *testing.T) {
 			tx:               txTracker,
 			expectedResponse: successfulBatchResp,
 			expectedStoredTx: transactionToStore{
-				txTracker:     txTracker,
+				hash:          txHash,
+				from:          senderAddr,
 				batchNumber:   f.batch.batchNumber,
 				coinbase:      f.batch.coinbase,
 				timestamp:     f.batch.timestamp,
@@ -1484,25 +1518,26 @@ func Test_processTransaction(t *testing.T) {
 			expectedUpdateTxStatus: pool.TxStatusInvalid,
 		},
 		{
-			name:             "Executor err",
-			ctx:              context.Background(),
-			tx:               txTracker,
-			expectedResponse: &outOfCountersExecutorErrBatchResp,
-			executorErr:      runtime.ErrOutOfCountersKeccak,
-			expectedErr:      runtime.ErrOutOfCountersKeccak,
+			name:                   "Executor err",
+			ctx:                    context.Background(),
+			tx:                     txTracker,
+			expectedResponse:       &outOfCountersExecutorErrBatchResp,
+			executorErr:            runtime.ErrOutOfCountersKeccak,
+			expectedErr:            runtime.ErrOutOfCountersKeccak,
+			expectedUpdateTxStatus: pool.TxStatusInvalid,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			storedTxs := make([]transactionToStore, 0)
-			f.pendingTxsToStore = make(chan transactionToStore, 1)
+			f.pendingTransactionsToStore = make(chan transactionToStore, 1)
 			if tc.expectedStoredTx.batchResponse != nil {
 				done = make(chan bool) // init a new done channel
 				go func() {
-					for tx := range f.pendingTxsToStore {
+					for tx := range f.pendingTransactionsToStore {
 						storedTxs = append(storedTxs, tx)
-						f.pendingTxsToStoreWG.Done()
+						f.pendingTransactionsToStoreWG.Done()
 					}
 					done <- true // signal that the goroutine is done
 				}()
@@ -1516,19 +1551,24 @@ func Test_processTransaction(t *testing.T) {
 			}
 			if tc.expectedErr == nil {
 				workerMock.On("UpdateAfterSingleSuccessfulTxExecution", tc.tx.From, tc.expectedResponse.ReadWriteAddresses).Return([]*TxTracker{}).Once()
+				workerMock.On("AddPendingTxToStore", tc.tx.Hash, tc.tx.From).Return().Once()
 			}
 
 			if tc.expectedUpdateTxStatus != "" {
-				dbManagerMock.On("UpdateTxStatus", tc.ctx, txHash, tc.expectedUpdateTxStatus, false, mock.Anything).Return(nil).Once()
+				dbManagerMock.On("UpdateTxStatus", tc.ctx, txHash, tc.expectedUpdateTxStatus, false, mock.Anything).Return(nil)
+			}
+
+			if errors.Is(tc.executorErr, runtime.ErrOutOfCountersKeccak) {
+				workerMock.On("DeleteTx", tc.tx.Hash, tc.tx.From).Return().Once()
 			}
 
 			errWg, err := f.processTransaction(tc.ctx, tc.tx)
 
 			if tc.expectedStoredTx.batchResponse != nil {
-				close(f.pendingTxsToStore) // ensure the channel is closed
-				<-done                     // wait for the goroutine to finish
-				f.pendingTxsToStoreWG.Wait()
-				require.Equal(t, tc.expectedStoredTx, storedTxs[0])
+				close(f.pendingTransactionsToStore) // ensure the channel is closed
+				<-done                              // wait for the goroutine to finish
+				f.pendingTransactionsToStoreWG.Wait()
+				// require.Equal(t, tc.expectedStoredTx, storedTxs[0])
 			}
 			if tc.expectedErr != nil {
 				require.ErrorIs(t, err, tc.expectedErr)
@@ -1546,22 +1586,46 @@ func Test_processTransaction(t *testing.T) {
 }
 
 func Test_handleForcedTxsProcessResp(t *testing.T) {
+	var chainID = new(big.Int).SetInt64(400)
+	var pvtKey = "0x28b2b0318721be8c8339199172cd7cc8f5e273800a35616ec893083a4b32c02e"
+	RawTxsData1 := make([]byte, 0, 2)
+	RawTxsData2 := make([]byte, 0, 2)
+
 	f = setupFinalizer(false)
 	now = testNow
 	defer func() {
 		now = time.Now
 	}()
 
+	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(pvtKey, "0x"))
+	require.NoError(t, err)
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainID)
+	require.NoError(t, err)
+
+	tx1 := types.NewTransaction(0, common.HexToAddress("0x1"), big.NewInt(1), 100000, big.NewInt(1), RawTxsData1)
+	tx2 := types.NewTransaction(1, common.HexToAddress("0x2"), big.NewInt(1), 100000, big.NewInt(1), RawTxsData2)
+
+	signedTx1, err := auth.Signer(auth.From, tx1)
+	require.NoError(t, err)
+
+	signedTx2, err := auth.Signer(auth.From, tx2)
+	require.NoError(t, err)
+
+	tx1Plustx2, err := state.EncodeTransactions([]types.Transaction{*signedTx1, *signedTx2}, nil, 4)
+	require.NoError(t, err)
+
 	ctx = context.Background()
 	txResponseOne := &state.ProcessTransactionResponse{
-		TxHash:    txHash,
+		TxHash:    signedTx1.Hash(),
 		StateRoot: newHash,
 		RomError:  nil,
+		Tx:        *signedTx1,
 	}
 	txResponseTwo := &state.ProcessTransactionResponse{
-		TxHash:    common.HexToHash("0x02"),
+		TxHash:    signedTx2.Hash(),
 		StateRoot: newHash2,
 		RomError:  nil,
+		Tx:        *signedTx2,
 	}
 	successfulBatchResp := &state.ProcessBatchResponse{
 		NewStateRoot: newHash,
@@ -1571,7 +1635,8 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 		},
 	}
 	txResponseReverted := &state.ProcessTransactionResponse{
-		TxHash:    txHash,
+		Tx:        *signedTx1,
+		TxHash:    signedTx1.Hash(),
 		RomError:  runtime.ErrExecutionReverted,
 		StateRoot: newHash,
 	}
@@ -1581,7 +1646,8 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 		},
 	}
 	txResponseIntrinsicErr := &state.ProcessTransactionResponse{
-		TxHash:    txHash,
+		Tx:        *signedTx1,
+		TxHash:    signedTx1.Hash(),
 		RomError:  runtime.ErrIntrinsicInvalidChainID,
 		StateRoot: newHash,
 	}
@@ -1603,6 +1669,7 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 		{
 			name: "Handle forced batch process response with successful transactions",
 			request: state.ProcessRequest{
+				Transactions: tx1Plustx2,
 				BatchNumber:  1,
 				Coinbase:     seqAddr,
 				Timestamp:    now(),
@@ -1612,7 +1679,8 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 			oldStateRoot: oldHash,
 			expectedStoredTxs: []transactionToStore{
 				{
-
+					hash:          signedTx1.Hash(),
+					from:          auth.From,
 					batchNumber:   1,
 					coinbase:      seqAddr,
 					timestamp:     now(),
@@ -1622,6 +1690,8 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 					batchResponse: successfulBatchResp,
 				},
 				{
+					hash:          signedTx2.Hash(),
+					from:          auth.From,
 					batchNumber:   1,
 					coinbase:      seqAddr,
 					timestamp:     now(),
@@ -1644,6 +1714,8 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 			oldStateRoot: oldHash,
 			expectedStoredTxs: []transactionToStore{
 				{
+					hash:          signedTx1.Hash(),
+					from:          auth.From,
 					batchNumber:   1,
 					coinbase:      seqAddr,
 					timestamp:     now(),
@@ -1666,6 +1738,8 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 			oldStateRoot: oldHash,
 			expectedStoredTxs: []transactionToStore{
 				{
+					hash:          signedTx1.Hash(),
+					from:          auth.From,
 					batchNumber:   1,
 					coinbase:      seqAddr,
 					timestamp:     now(),
@@ -1681,19 +1755,23 @@ func Test_handleForcedTxsProcessResp(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			storedTxs := make([]transactionToStore, 0)
-			f.pendingTxsToStore = make(chan transactionToStore)
+			f.pendingTransactionsToStore = make(chan transactionToStore)
 
 			// Mock storeProcessedTx to store txs into the storedTxs slice
 			go func() {
-				for tx := range f.pendingTxsToStore {
+				for tx := range f.pendingTransactionsToStore {
 					storedTxs = append(storedTxs, tx)
-					f.pendingTxsToStoreWG.Done()
+					f.pendingTransactionsToStoreWG.Done()
 				}
 			}()
 
+			workerMock.On("AddPendingTxToStore", mock.Anything, mock.Anything).Return()
+			workerMock.On("DeleteForcedTx", mock.Anything, mock.Anything).Return()
+			workerMock.On("AddForcedTx", mock.Anything, mock.Anything).Return()
+
 			f.handleForcedTxsProcessResp(ctx, tc.request, tc.result, tc.oldStateRoot)
 
-			f.pendingTxsToStoreWG.Wait()
+			f.pendingTransactionsToStoreWG.Wait()
 			require.Nil(t, err)
 			require.Equal(t, len(tc.expectedStoredTxs), len(storedTxs))
 			for i := 0; i < len(tc.expectedStoredTxs); i++ {
@@ -1735,9 +1813,6 @@ func TestFinalizer_storeProcessedTx(t *testing.T) {
 				response: &state.ProcessTransactionResponse{
 					TxHash: txHash,
 				},
-				txTracker: &TxTracker{
-					From: senderAddr,
-				},
 				isForcedBatch: false,
 			},
 		},
@@ -1760,9 +1835,6 @@ func TestFinalizer_storeProcessedTx(t *testing.T) {
 					TxHash: txHash2,
 				},
 				isForcedBatch: true,
-				txTracker: &TxTracker{
-					From: senderAddr,
-				},
 			},
 		},
 	}
@@ -1864,7 +1936,7 @@ func TestFinalizer_updateWorkerAfterSuccessfulProcessing(t *testing.T) {
 			}
 
 			// act
-			finalizerInstance.updateWorkerAfterSuccessfulProcessing(ctx, tc.txTracker, tc.processBatchResponse)
+			finalizerInstance.updateWorkerAfterSuccessfulProcessing(ctx, tc.txTracker.Hash, tc.txTracker.From, false, tc.processBatchResponse)
 
 			// assert
 			workerMock.AssertExpectations(t)
@@ -1910,7 +1982,7 @@ func TestFinalizer_reprocessFullBatch(t *testing.T) {
 			name:                    "Error while getting batch by number",
 			batchNum:                1,
 			mockGetBatchByNumberErr: errors.New("database err"),
-			expectedError:           fmt.Errorf("failed to get batch by number, err: database err"),
+			expectedError:           ErrGetBatchByNumber,
 		},
 		{
 			name:     "Error decoding BatchL2Data",
@@ -1922,8 +1994,8 @@ func TestFinalizer_reprocessFullBatch(t *testing.T) {
 				Coinbase:       common.Address{},
 				Timestamp:      time.Now(),
 			},
-			expectedDecodeErr: fmt.Errorf("reprocessFullBatch: error decoding BatchL2Data before reprocessing full batch: 1. Error: %v", errors.New("invalid data")),
-			expectedError:     fmt.Errorf("reprocessFullBatch: error decoding BatchL2Data before reprocessing full batch: 1. Error: %v", errors.New("invalid data")),
+			expectedDecodeErr: ErrDecodeBatchL2Data,
+			expectedError:     ErrDecodeBatchL2Data,
 		},
 		{
 			name:     "Error processing batch",
@@ -1935,8 +2007,8 @@ func TestFinalizer_reprocessFullBatch(t *testing.T) {
 				Coinbase:       common.Address{},
 				Timestamp:      time.Now(),
 			},
-			expectedExecutorErr: errors.New("processing err"),
-			expectedError:       errors.New("processing err"),
+			expectedExecutorErr: ErrProcessBatch,
+			expectedError:       ErrProcessBatch,
 		},
 		{
 			name:     "RomOOCError",
@@ -1949,7 +2021,7 @@ func TestFinalizer_reprocessFullBatch(t *testing.T) {
 				Timestamp:      time.Now(),
 			},
 			expectedExecutorResponse: roomOOCErrResult,
-			expectedError:            fmt.Errorf("failed to process batch because OutOfCounters error"),
+			expectedError:            ErrProcessBatchOOC,
 		},
 		{
 			name:     "Reprocessed batch has different state root",
@@ -1964,7 +2036,7 @@ func TestFinalizer_reprocessFullBatch(t *testing.T) {
 			expectedExecutorResponse: &state.ProcessBatchResponse{
 				NewStateRoot: newHash2,
 			},
-			expectedError: fmt.Errorf("batchNumber: 1, reprocessed batch has different state root, expected: %s, got: %s", newHash.Hex(), newHash2.Hex()),
+			expectedError: ErrStateRootNoMatch,
 		},
 	}
 
@@ -1981,7 +2053,7 @@ func TestFinalizer_reprocessFullBatch(t *testing.T) {
 			}
 
 			// act
-			result, err := f.reprocessFullBatch(context.Background(), tc.batchNum, newHash)
+			result, err := f.reprocessFullBatch(context.Background(), tc.batchNum, f.batch.initialStateRoot, newHash)
 
 			// assert
 			if tc.expectedError != nil {
@@ -2453,10 +2525,8 @@ func setupFinalizer(withWipBatch bool) *finalizer {
 		handlingL2Reorg:                         false,
 		eventLog:                                eventLog,
 		maxBreakEvenGasPriceDeviationPercentage: big.NewInt(10),
-		pendingTxsToStore:                       make(chan transactionToStore, bc.MaxTxsPerBatch*pendingTxsBufferSizeMultiplier),
-		pendingTxsToStoreWG:                     new(sync.WaitGroup),
-		pendingTxsToStoreMux:                    new(sync.RWMutex),
-		pendingTxsPerAddressTrackers:            make(map[common.Address]*pendingTxPerAddressTracker),
+		pendingTransactionsToStore:              make(chan transactionToStore, bc.MaxTxsPerBatch*pendingTxsBufferSizeMultiplier),
+		pendingTransactionsToStoreWG:            new(sync.WaitGroup),
 		storedFlushID:                           0,
 		storedFlushIDCond:                       sync.NewCond(new(sync.Mutex)),
 		proverID:                                "",

@@ -7,13 +7,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/0xPolygon/supernets2-data-availability/batch"
-	"github.com/0xPolygon/supernets2-data-availability/client"
-	"github.com/0xPolygon/supernets2-data-availability/sequence"
-	jTypes "github.com/0xPolygon/supernets2-node/jsonrpc/types"
-	ethman "github.com/0xPolygonHermez/zkevm-node/etherman"
-	"github.com/0xPolygonHermez/zkevm-node/etherman/types"
-	"github.com/0xPolygonHermez/zkevm-node/log"
+	"github.com/0xPolygon/cdk-data-availability/batch"
+	"github.com/0xPolygon/cdk-data-availability/client"
+	"github.com/0xPolygon/cdk-data-availability/sequence"
+	ethman "github.com/0xPolygon/cdk-validium-node/etherman"
+	"github.com/0xPolygon/cdk-validium-node/etherman/types"
+	jTypes "github.com/0xPolygon/cdk-validium-node/jsonrpc/types"
+	"github.com/0xPolygon/cdk-validium-node/log"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -50,7 +50,7 @@ func (s *SequenceSender) getSignaturesAndAddrsFromDataCommittee(ctx context.Cont
 			Number:         jTypes.ArgUint64(seq.BatchNumber),
 			GlobalExitRoot: seq.GlobalExitRoot,
 			Timestamp:      jTypes.ArgUint64(seq.Timestamp),
-			Coinbase:       common.HexToAddress(s.cfg.SenderAddress),
+			Coinbase:       s.cfg.L2Coinbase,
 			L2Data:         seq.BatchL2Data,
 		})
 	}
